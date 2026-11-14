@@ -3,6 +3,14 @@
 
 import { parseTrigger, parseOwnerCommand, TRIGGER_WORDS } from "./triggers.js";
 import { saveConfigJson } from "./config.js";
+import { balanceReport } from "./billing.js";
+import {
+  canRunOwnerCommand,
+  canUsePrivateChat,
+  isOwner,
+  ownerNote,
+  describeRole,
+} from "./permissions.js";
 
 const EDIT_INTERVAL_MS = 1500; // 流式刷新占位消息的最短间隔
 const TG_MESSAGE_LIMIT = 4000; // Telegram 单条消息上限约 4096，留点余量分片
@@ -15,8 +23,15 @@ export function createHandler(deps) {
   const { client, config, pool, store, logger, startedAt } = deps;
 
   const blacklist = new Set(config.blacklist || []);
+  /** @type {Set<string>} 管理员名单（创建者用命令增删，持久化在 config.json） */
+  const adminIds = new Set((config.adminIds || []).map(String));
   /** @type {Map<string, number>} 普通用户上次提问时间（冷却用） */
   const lastAskAt = new Map();
+
+  // 权限判断用的配置视图：管理员名单以运行时 Set 为准（命令增删后立刻生效，不必重启）。
+  function permConfig() {
+    return { ownerId: config.ownerId, adminIds: [...adminIds], privateChat: config.privateChat };
+  }
 
   async function reply(msg, text) {
     await client.sendMessage(msg.peerId, { message: text, replyTo: msg.id });
@@ -27,6 +42,14 @@ export function createHandler(deps) {
       saveConfigJson({ blacklist: [...blacklist] });
     } catch (err) {
       logger.error(`保存黑名单失败：${err.message}`);
+    }
+  }
+
+  function persistAdmins() {
+    try {
+      saveConfigJson({ adminIds: [...adminIds] });
+    } catch (err) {
+      logger.error(`保存管理员名单失败：${err.message}`);
     }
   }
 
@@ -42,8 +65,9 @@ export function createHandler(deps) {
       return;
     }
 
-    if (cmd === "用量") {
-      await reply(msg, `今日用量：\n${pool.usageReport()}`);
+    if (cmd === "账单" || cmd === "用量") {
+      const bal = await balanceReport(pool.entries);
+      await reply(msg, `今日账单：\n${pool.usageReport()}\n\nAPI 余额：\n${bal}`);
       return;
     }
 
@@ -63,6 +87,33 @@ export function createHandler(deps) {
       return reply(msg, `已解封用户 ${target}`);
     }
 
+    if (cmd === "加管理员") {
+      const target = (rest[0] || "").trim();
+      if (!target) return reply(msg, "用法：@ai 加管理员 <用户ID>");
+      if (isOwner(target, permConfig())) return reply(msg, "创建者本人就是最高权限，不用再加为管理员。");
+      if (adminIds.has(target)) return reply(msg, `用户 ${target} 已经是管理员了`);
+      adminIds.add(target);
+      persistAdmins();
+      return reply(msg, `已添加管理员 ${target}`);
+    }
+
+    if (cmd === "删管理员") {
+      const target = (rest[0] || "").trim();
+      if (!target) return reply(msg, "用法：@ai 删管理员 <用户ID>");
+      if (!adminIds.has(target)) return reply(msg, `用户 ${target} 不在管理员名单里`);
+      adminIds.delete(target);
+      persistAdmins();
+      return reply(msg, `已删除管理员 ${target}`);
+    }
+
+    if (cmd === "管理员列表") {
+      if (adminIds.size === 0) {
+        return reply(msg, "暂无管理员。用 @ai 加管理员 <用户ID> 添加。");
+      }
+      const lines = [...adminIds].map((id) => `- ${id}`);
+      return reply(msg, `管理员名单（共 ${adminIds.size} 人）：\n${lines.join("\n")}`);
+    }
+
     if (cmd === "清空上下文") {
       const n = store.clearAll();
       return reply(msg, `已清空全部对话上下文（${n} 组）`);
@@ -77,7 +128,10 @@ export function createHandler(deps) {
       return reply(msg, `触发词绑定：\n${lines.join("\n")}`);
     }
 
-    return reply(msg, "未知命令。可用：状态、用量、拉黑 <ID>、解封 <ID>、清空上下文、绑定列表");
+    return reply(
+      msg,
+      "未知命令。可用：状态、账单、拉黑 <ID>、解封 <ID>、加管理员 <ID>、删管理员 <ID>、管理员列表、清空上下文、绑定列表",
+    );
   }
 
   async function handleChat(msg, chatId, senderId, parsed) {
@@ -109,8 +163,14 @@ export function createHandler(deps) {
     }
 
     const history = store.get(chatId, senderId);
+    // 系统提示 = 基础提示 + 创建者信息（认主）+ 当前发言者身份标注（创建者/管理员才有）。
+    const systemParts = [config.systemPrompt];
+    const on = ownerNote(config);
+    if (on) systemParts.push(on);
+    const role = describeRole(senderId, permConfig());
+    if (role) systemParts.push(role);
     const messages = [
-      { role: "system", content: config.systemPrompt },
+      { role: "system", content: systemParts.join("\n") },
       ...history,
       { role: "user", content: parsed.question },
     ];
@@ -199,13 +259,21 @@ export function createHandler(deps) {
 
       if (blacklist.has(senderId)) return;
 
-      // 号主命令：必须是号主本人，且以 “@ai ” 开头。
-      if (config.ownerId && senderId === config.ownerId) {
+      // 号主命令：必须是创建者本人，且以 “@ai ” 开头。
+      if (canRunOwnerCommand(senderId, permConfig())) {
         const body = parseOwnerCommand(text);
         if (body !== null) {
           await handleOwnerCommand(msg, senderId, body);
           return;
         }
+      }
+
+      // 私聊门禁：privateChat="admins" 时普通用户的私聊静默不回；群聊不受影响。
+      // 私聊的判定：peer 是单个用户（userId）且不带群/频道 ID。
+      const isPrivateChat = Boolean(msg.peerId?.userId) && !msg.peerId?.chatId && !msg.peerId?.channelId;
+      if (isPrivateChat && !canUsePrivateChat(senderId, permConfig())) {
+        logger.info(`私聊门禁拦截：用户 ${senderId} 不在放行名单（privateChat=admins）`);
+        return;
       }
 
       const parsed = parseTrigger(text, {
