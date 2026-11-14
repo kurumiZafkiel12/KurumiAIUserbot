@@ -5,6 +5,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { config as loadDotenv } from "dotenv";
 import { DEFAULT_PROVIDER } from "./triggers.js";
+import { normalizeAdminIds } from "./permissions.js";
 
 loadDotenv();
 
@@ -22,7 +23,7 @@ function readConfigJson() {
   }
 }
 
-/** 把运行期产生的配置（目前是黑名单）合并写回 config.json。 */
+/** 把运行期产生的配置（黑名单、管理员名单）合并写回 config.json。 */
 export function saveConfigJson(patch) {
   const current = readConfigJson();
   const next = { ...current, ...patch };
@@ -95,5 +96,8 @@ export function loadConfig() {
     providers,
     triggerMap,
     blacklist: Array.isArray(json.blacklist) ? json.blacklist.map(String) : [],
+    adminIds: normalizeAdminIds(json.adminIds),
+    // 私聊门禁："all"（默认）人人可私聊；"admins" 只有创建者+管理员可私聊，群聊不受影响。
+    privateChat: json.privateChat === "admins" ? "admins" : "all",
   };
 }
