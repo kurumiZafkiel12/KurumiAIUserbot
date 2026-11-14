@@ -94,3 +94,15 @@ return `当前和你对话的人（ID ${id}）是管理员，是你的创建者�
 }
 return null;
 }
+
+/**
+* 全局暂停时，这条普通消息要不要拦下来（不回复、不调模型）。
+* paused 为假：一律不拦（正常运行）；
+* paused 为真：只有创建者本人放行——他的号主命令在主流程里更早就被处理了，
+* 这里放行是保证他暂停期间发普通消息也不被误拦；管理员与普通用户一律拦下，
+* 暂停的目的就是创建者不在时别让任何人刷 token，管理员也不能例外开口子。
+*/
+export function shouldPauseBlock(paused, userId, config) {
+if (!paused) return false;
+return !isOwner(userId, config);
+}
