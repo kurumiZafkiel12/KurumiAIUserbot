@@ -6,3 +6,4 @@ logs/
 config.json
 facts.json
 profiles.json
+state.json
