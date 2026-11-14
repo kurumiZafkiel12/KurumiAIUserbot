@@ -1,1 +1,15 @@
-IyDmm7TmlrDml6Xlv5cKCiMjIHYwLjEuMO+8iDIwMjYtMTEtMTTvvIkKCummluS4queJiOacrOOAggoKLSDnp4HogYrkuI7nvqTogYogQCDop6blj5Hpl67nrZTvvJrmtYHlvI/nlJ/miJDvvIznrZTmoYjnvJbovpHlm57ljaDkvY3mtojmga/vvJvotoXplb/nrZTmoYjoh6rliqjliIbniYcKLSDkuIrkuIvmloforrDlv4bvvJrmjInjgIzkvJror50gKyDmj5Dpl67ogIXjgI3pmpTnprvvvIzpu5jorqTkv53nlZnmnIDov5EgMjAg5p2hCi0g5aSa5qih5Z6L5rGg77ya5aSa5LiqIE9wZW5BSSDlhbzlrrnmjqXlj6PmjInmnYPph43mjJHpgInvvIzlpLHotKXlhrfljbTlubboh6rliqjliIfmjaLkuIvkuIDkuKoKLSDop6blj5Hor43nu5HlrprvvJpgQGFpYOOAgWBAYWFg772eYEBhemAg5Y+v5YiG5Yir57uR5a6a5LiN5ZCM5qih5Z6LCi0g5q+P5pel6ZmQ6aKd77ya5q+P5Liq5qih5Z6L5Y+v6K6+5q+P5pel6LCD55So5LiK6ZmQ77yM6Leo5aSp6Ieq5Yqo5riF6Zu2Ci0g6Ziy5Yi377ya5pmu6YCa55So5oi35o+Q6Zeu5Ya35Y2077yI6buY6K6kIDUg56eS77yJ44CB6buR5ZCN5Y2V77yI5oyB5LmF5YyW5L+d5a2Y77yJCi0g5Y+35Li75ZG95Luk77ya54q25oCB44CB55So6YeP44CB5ouJ6buRL+ino+WwgeOAgea4heepuuS4iuS4i+aWh+OAgeafpeeci+inpuWPkeivjee7keWumgotIOWQjeWtl+aXtumSn++8iOWPr+mAie+8ie+8muaYvuekuuWQjeW4puW9k+WJjeaXtumXtO+8jOavj+WIhumSn+WIt+aWsO+8jOaXtuWMuuWPr+mFjQotIOWujOaVtOS4reaWh+aVmeeoi++8iFJFQURNRe+8ieS4jumFjee9ruivtOaYju+8iGRvY3MvQ09ORklHLm1k77yJCg==
+# 更新日志
+
+## v0.1.0（2026-11-14）
+
+首个版本。
+
+- 私聊与群聊 @ 触发问答：流式生成，答案编辑回占位消息；超长答案自动分片
+- 上下文记忆：按「会话 + 提问者」隔离，默认保留最近 20 条
+- 多模型池：多个 OpenAI 兼容接口按权重挑选，失败冷却并自动切换下一个
+- 触发词绑定：`@ai`、`@aa`～`@az` 可分别绑定不同模型
+- 每日限额：每个模型可设每日调用上限，跨天自动清零
+- 防刷：普通用户提问冷却（默认 5 秒）、黑名单（持久化保存）
+- 号主命令：状态、用量、拉黑/解封、清空上下文、查看触发词绑定
+- 名字时钟（可选）：显示名带当前时间，每分钟刷新，时区可配
+- 完整中文教程（README）与配置说明（docs/CONFIG.md）
