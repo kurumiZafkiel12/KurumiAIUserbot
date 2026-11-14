@@ -1,0 +1,6 @@
+.env
+.ai-session
+node_modules/
+logs/
+*.log
+config.json

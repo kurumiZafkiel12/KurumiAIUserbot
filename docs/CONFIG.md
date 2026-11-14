@@ -1,0 +1,113 @@
+# config.json 配置详解
+
+`config.json` 放在项目根目录（与 `.env` 同级），是**可选**文件：不建它时，程序只用 `.env` 里的默认接口运行。
+
+它的用途是放 `.env` 装不下的东西：多个模型接口、触发词绑定、每日限额、系统提示词等。修改后需要**重启程序**才生效。
+
+> ⚠️ `config.json` 里会写 AI 接口密钥，项目已把它列入 `.gitignore`。不要手工提交到任何仓库，不要截图外发。
+
+## 完整示例
+
+```json
+{
+  "systemPrompt": "你是一个友好的 AI 助手，在 Telegram 里回答问题，回答简洁准确。",
+  "contextSize": 20,
+  "cooldownSeconds": 5,
+  "customProviders": [
+    {
+      "name": "relay-a",
+      "baseURL": "https://example.com/v1",
+      "apiKey": "sk-xxxxxxxx",
+      "model": "model-a",
+      "weight": 7,
+      "dailyLimit": 200
+    },
+    {
+      "name": "relay-b",
+      "baseURL": "https://another.example.com/v1",
+      "apiKey": "sk-yyyyyyyy",
+      "model": "model-b",
+      "weight": 3,
+      "dailyLimit": 0
+    }
+  ],
+  "triggerMap": {
+    "@ab": "relay-a",
+    "@ac": "relay-b"
+  },
+  "dailyLimits": {
+    "default": 500
+  },
+  "blacklist": []
+}
+```
+
+## 字段说明
+
+### systemPrompt（字符串，可选）
+
+发给模型的系统提示词。缺省时使用程序内置的一句通用提示词。
+
+### contextSize（数字，可选，默认 20）
+
+每组对话（同一会话里同一个提问者）最多保留的历史消息条数，user 与 assistant 合计计数。超出的最早消息会被丢弃。设得越大越能“记事”，但每次请求带的历史也越长、越费 token。
+
+### cooldownSeconds（数字，可选，默认 5）
+
+普通用户两次提问之间的最短间隔（秒）。间隔内的提问会被直接忽略，防止刷屏烧额度。设为 0 表示关闭冷却。号主不受冷却限制。
+
+### customProviders（数组，可选，默认空）
+
+追加的模型接口列表。加上 `.env` 定义的默认接口（名字固定为 `default`），共同组成提供方池：提问时会按权重挑一个调用，失败自动换下一个（失败的接口冷却 30 秒）。
+
+每个元素字段：
+
+| 字段 | 必填 | 说明 |
+|---|---|---|
+| `name` | 是 | 提供方名字，自己起，英文/数字/短横线，如 `relay-a`。触发词绑定和每日限额都按这个名字引用。不要与 `default` 重名 |
+| `baseURL` | 是 | OpenAI 兼容接口地址，一般以 `/v1` 结尾 |
+| `apiKey` | 是 | 该接口的密钥 |
+| `model` | 是 | 模型名，以接口实际支持为准 |
+| `weight` | 否 | 挑选权重，默认 1。权重越大被选中的概率越高（权重 7 与 3 ≈ 70% 与 30%） |
+| `dailyLimit` | 否 | 每日调用上限，默认 0 = 不限。达到上限后当天不再选它 |
+
+### triggerMap（对象，可选，默认空）
+
+触发词 → 提供方名字的绑定。键是触发词（`@aa`～`@az`），值是提供方名字（`default` 或 customProviders 里的 `name`）。
+
+- `@ai` 是默认触发词：不绑定的时候自动指向 `default`；在这里显式绑定可以改指其它提供方。
+- 提及机器人用户名（`@MY_USERNAME + 问题`）走的也是 `@ai` 的绑定。
+- 没绑定的触发词被使用时，机器人会回复“该触发词还没有绑定模型”。
+- 号主可用 `@ai 绑定列表` 查看当前全部绑定状态。
+
+### dailyLimits（对象，可选，默认空）
+
+按提供方名字覆盖每日上限，适合不想改 customProviders 写法、只想统一管限额的情况。例如 `{ "default": 500 }` 表示 `.env` 的默认接口每天最多调 500 次。这里的值优先于 customProviders 元素里的 `dailyLimit`。
+
+计数按程序所在机器的本地日期统计，每天零点过后自动清零（跨天第一次调用时惰性清零，不需要重启）。
+
+### blacklist（数组，程序维护，不要手工乱改）
+
+被拉黑的用户数字 ID 列表（字符串数组）。号主用 `@ai 拉黑 <ID>` / `@ai 解封 <ID>` 命令时程序会自动读写这个字段。手工编辑也行，改完重启生效。
+
+## 最小示例：只加一个备用模型并绑触发词
+
+```json
+{
+  "customProviders": [
+    {
+      "name": "backup",
+      "baseURL": "https://example.com/v1",
+      "apiKey": "sk-xxxxxxxx",
+      "model": "model-backup",
+      "weight": 5,
+      "dailyLimit": 100
+    }
+  ],
+  "triggerMap": {
+    "@ab": "backup"
+  }
+}
+```
+
+这样：`@ai` 继续用 `.env` 的默认接口；`@ab` 用 backup；默认接口要是挂了，也会自动落到 backup 上（提供方池失败切换对所有可用接口生效，不仅限于绑定的那个）。
