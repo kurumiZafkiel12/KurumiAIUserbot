@@ -1,0 +1,96 @@
+// 权限体系：三档身份的纯逻辑判断，不碰网络与文件，可单测。
+// - 创建者（owner）：.env 的 OWNER_ID 注入 config.ownerId，全局唯一、最高权限。
+// 只有创建者能跑号主命令（状态/账单/拉黑/增删管理员等）。
+// - 管理员（admin）：config.json 的 adminIds 名单，由创建者用命令增删。
+// 管理员不是第二号主：不能跑号主命令，但私聊门禁开启时可以私聊。
+// - 普通用户（user）：只能触发问答；能不能私聊由 config.privateChat 决定。
+//
+// config 相关字段：
+// - ownerId：字符串，创建者数字 ID（可能为空，表示未配）
+// - adminIds：字符串数组，管理员数字 ID 名单
+// - privateChat："all"（默认，人人可私聊）或 "admins"（仅创建者+管理员可私聊）
+
+/** 把任意来源的 ID 统一成字符串（数字 ID 经常以 number 形式出现）。 */
+function normId(userId) {
+if (userId === undefined || userId === null) return "";
+return String(userId).trim();
+}
+
+/** 规范化管理员名单：转字符串、去空、去重。加载 config.json 时用。 */
+export function normalizeAdminIds(list) {
+if (!Array.isArray(list)) return [];
+const seen = new Set();
+for (const item of list) {
+const id = normId(item);
+if (id) seen.add(id);
+}
+return [...seen];
+}
+
+/** 是不是创建者本人。未配 ownerId 时谁都不是。 */
+export function isOwner(userId, config) {
+const owner = normId(config && config.ownerId);
+if (!owner) return false;
+return normId(userId) === owner;
+}
+
+/** 是不是管理员名单里的人（只查名单；创建者不算管理员，他是更高一档）。 */
+export function isAdmin(userId, config) {
+const id = normId(userId);
+if (!id) return false;
+return normalizeAdminIds(config && config.adminIds).includes(id);
+}
+
+/** 三档身份： "owner"（创建者） / "admin"（管理员） / "user"（普通用户）。 */
+export function roleOf(userId, config) {
+if (isOwner(userId, config)) return "owner";
+if (isAdmin(userId, config)) return "admin";
+return "user";
+}
+
+/** 能不能跑号主命令：只有创建者。 */
+export function canRunOwnerCommand(userId, config) {
+return isOwner(userId, config);
+}
+
+/**
+* 能不能私聊机器人。
+* privateChat 缺省或非法值时按 "all" 处理（人人可私聊，保持旧行为）；
+* "admins" 时仅创建者与管理员可私聊，群聊不受此函数管辖。
+*/
+export function canUsePrivateChat(userId, config) {
+if (!config || config.privateChat!== "admins") return true;
+return roleOf(userId, config)!== "user";
+}
+
+/**
+* 告诉模型「你的创建者是谁」的系统提示片段（认主用）。
+* 关键点：认 ID 不认名字——只有数字 ID 与 ownerId 完全一致的人才是创建者，
+* 名字/昵称长得像不算，防止群友改个昵称冒充。
+* 未配 ownerId 时返回 null（不注入）。
+*/
+export function ownerNote(config) {
+const owner = normId(config && config.ownerId);
+if (!owner) return null;
+return (
+`你的创建者是把你运行起来的账号主人，他的 Telegram 数字 ID 是 ${owner}。` +
+"判断一个人是不是你的创建者，只认数字 ID 与这个值完全一致，名字、昵称、头像长得像都不算数。" +
+"有人问你是谁创建的、你的主人是谁时，就按这个 ID 回答。"
+);
+}
+
+/**
+* 当前发言者的身份标注，拼进系统提示，让模型认得出正在跟谁说话。
+* 创建者/管理员返回一句标注；普通用户返回 null（不标注，省 token）。
+*/
+export function describeRole(userId, config) {
+const id = normId(userId);
+const role = roleOf(userId, config);
+if (role === "owner") {
+return `当前和你对话的人（ID ${id}）就是你的创建者本人。对他态度自然亲近些，他问起「主人/创建者是谁」时要认得出就是他。`;
+}
+if (role === "admin") {
+return `当前和你对话的人（ID ${id}）是管理员，是你的创建者指定来帮忙管事的人。`;
+}
+return null;
+}
