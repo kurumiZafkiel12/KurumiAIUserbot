@@ -6,6 +6,8 @@
 
 它登录你的一个 Telegram 小号，监听私聊和群聊消息：别人 `@` 它或者用触发词提问，它就调用你配置的 AI 接口（OpenAI 兼容格式）流式生成回答，并把答案编辑回“正在思考中”的占位消息里。支持多个模型接口按权重轮换、失败自动切换、每日限额防刷，以及一组号主管理命令。
 
+这份文档是**给零基础准备的实操版**：从「要准备什么」开始，一步一步把命令写全，照着敲就能跑起来。已经会用服务器的老手可以直接跳到 [配置 .env](#配置-env)。
+
 > ⚠️ userbot 用的是真人账号登录态，违反 Telegram 使用习惯的用法有封号风险。请务必使用**小号**，不要用你的主账号跑。
 
 ## 功能列表
@@ -24,14 +26,18 @@
 
 ## 目录
 
-- [准备：申请 api_id / api_hash](#准备申请-api_id--api_hash)
-- [安装](#安装)
-- [配置 .env](#配置-env)
-- [首次登录](#首次登录)
-- [启动](#启动)
-- [用 systemd 常驻（可选）](#用-systemd-常驻可选)
+- [你需要准备什么](#你需要准备什么)
+- [全程路线图](#全程路线图)
+- [第 1 步：申请 api_id / api_hash](#第-1-步申请-api_id--api_hash)
+- [第 2 步：连上你的 VPS](#第-2-步连上你的-vps)
+- [第 3 步：装环境和代码](#第-3-步装环境和代码)
+- [第 4 步：填配置 .env](#第-4-步填配置-env)
+- [第 5 步：首次登录](#第-5-步首次登录)
+- [第 6 步：启动并测试](#第-6-步启动并测试)
+- [第 7 步：让它 24 小时在线（systemd）](#第-7-步让它-24-小时在线systemd)
 - [使用方法](#使用方法)
 - [配置多模型（config.json）](#配置多模型configjson)
+- [费用大概多少](#费用大概多少)
 - [常见问题排错](#常见问题排错)
 - [安全提醒](#安全提醒)
 - [目录结构](#目录结构)
@@ -39,62 +45,146 @@
 
 ---
 
-## 准备：申请 api_id / api_hash
+## 你需要准备什么
+
+先把这 4 样备齐，缺一样都会卡住。后面每一步会具体说怎么弄。
+
+| # | 东西 | 数量 | 是什么 / 去哪弄 | 大概成本 |
+|---|---|---|---|---|
+| 1 | **VPS（云服务器）** | 1 台 | 一台 24 小时开机的远程 Linux 电脑，机器人住在上面。配置不用高：**1 核 CPU / 1 GB 内存 / 10 GB 硬盘**就够跑；系统选 **Debian 12** 或 **Ubuntu 22.04**。买的时候商家会给你三样东西：**IP 地址、root 密码、SSH 端口**（端口一般是 22，改过端口的商家会单独写明），先记好 | 常见价位约 20～50 元/月（年付更便宜） |
+| 2 | **Telegram 小号** | 1 个 | 专门用来当机器人的 Telegram 账号。**不要用你的大号**（有封号风险，见文末安全提醒）。提前在手机或电脑上登录好这个小号，因为登录时要收验证码；顺手给它设一个**用户名**（@xxx），别人靠这个 @ 它 | 已有小号就免费 |
+| 3 | **api_id / api_hash** | 1 对 | Telegram 官方给个人号用的登录凭证，在 https://my.telegram.org 免费申请，第 1 步有详细图文流程 | 免费 |
+| 4 | **AI 接口（API Key）** | 1 个 | 机器人回答问题靠它。要 **OpenAI 兼容格式**的接口都行：OpenAI 官方、国内/国外的中转服务、自建的接口都可以。你会用到三样：**key**（一串 `sk-` 开头的密钥）、**接口地址**（一般以 `/v1` 结尾）、**模型名**（如 `gpt-4o-mini`，以商家实际支持为准） | 按用量付费，中转一般先充几块到几十块就能用很久 |
+
+另外你还需要**一台能上网的电脑**（Windows 或 Mac 都行）来敲命令；实在没有电脑，用手机装个 SSH 客户端（如 Termius）也能操作，就是打字累一点。
+
+> 为什么要 VPS，不能装在自己电脑上？可以装，但你电脑一关机/一断网，机器人就下线了。想让它全天在线，就得放 VPS 上。本教程默认按 VPS 讲；装自己电脑上也行，跳过第 2 步，在本机终端里从第 3 步开始即可（Windows 本机跑不适用 systemd 那步）。
+
+## 全程路线图
+
+整个过程大概长这样，心里先有个数（熟练后全程约 20 分钟）：
+
+1. **申请 api_id / api_hash**（约 2 分钟，在网页上点）
+2. **连上 VPS**（约 3 分钟，学会用 SSH 登录服务器）
+3. **装环境和代码**（约 5 分钟，装 Node.js、下载本项目）
+4. **填配置 .env**（约 5 分钟，把凭证和 key 填进一个文件）
+5. **首次登录**（约 3 分钟，输手机号 + 验证码，之后免登录）
+6. **启动并测试**（约 2 分钟，用大号给它发条消息验证）
+7. **让它 24 小时在线**（约 3 分钟，交给 systemd 托管，关掉终端也不停）
+
+下面提到的「终端」「命令行」指的是同一个东西：一个能输入命令的黑框窗口。在 VPS 上操作时，你是先用 SSH 连进服务器（第 2 步），之后的命令都输在那个连接窗口里。
+
+## 第 1 步：申请 api_id / api_hash
 
 userbot 登录个人号需要一对 Telegram 应用凭证，这是官方开放的：
 
 1. 打开 https://my.telegram.org ，用你的 Telegram 手机号登录（验证码会发到 Telegram 应用内）。
 2. 点 **API development tools**。
 3. 第一次会让你创建一个应用：App title、Short name 随便填（例如 `myuserbot`），Platform 选 Desktop，点 Create。
-4. 创建完成后页面上会显示 **api_id**（一串数字）和 **api_hash**（一串十六进制字符），记下来，下一步填进 `.env`。
+4. 创建完成后页面上会显示 **api_id**（一串数字）和 **api_hash**（一串十六进制字符），记下来，第 4 步填进 `.env`。
 
-注意：这对凭证是**你账号名下应用**的凭证，不要发给任何人、不要提交进 git 仓库。
+注意：这对凭证是**你账号名下应用**的凭证，不要发给任何人、不要提交进 git 仓库。不要图省事用网上流传的「Telegram Desktop 公开 api_id（2040）」之类共享凭证：风控更严、容易触发限制，而且账号以后必须一直用同一套凭证登录。自己申请只要一分钟。
 
-## 安装
+## 第 2 步：连上你的 VPS
 
-需要 Node.js 20 或更高版本。检查版本：
+买好 VPS 后，商家会给你 **IP 地址**、**root 密码**，多数还会给 **SSH 端口**（没写就默认 22）。连接 VPS 用的方式叫 SSH，在你自己的电脑上操作：
+
+**Windows**：按 `Win + R`，输入 `powershell` 回车（或打开 Windows Terminal），在窗口里输入：
 
 ```bash
-node -v   # 应显示 v20.x 或更高
+ssh root@你的服务器IP
 ```
 
-没有 Node 的话：
-
-- Windows / macOS：到 https://nodejs.org 下载 LTS 安装包。
-- Linux（Debian/Ubuntu）：可以用 NodeSource 的脚本，或下载官方二进制包解压到 `/usr/local`。
-
-然后拉代码并装依赖：
+如果商家给的端口不是 22（比如 25330），就加 `-p 端口`：
 
 ```bash
-git clone <本仓库地址> kurumiaiuserbot
+ssh -p 25330 root@你的服务器IP
+```
+
+**Mac**：打开「终端」（在启动台搜 Terminal），命令同上。
+
+**手机**：装 Termius，新建连接，填 IP、端口、用户名 `root` 和密码即可。
+
+第一次连接会发生这些事，都是正常的：
+
+1. 出现一行 `Are you sure you want to continue connecting (yes/no)?` —— 输入 `yes` 回车。
+2. 出现 `root@xxx's password:` —— 输入商家给的 root 密码再回车。**注意：输密码时屏幕上不会显示任何字符**（连星号都没有），这是 Linux 的正常行为，盲打完直接回车就行，别以为键盘坏了。
+3. 登录成功后，提示符会变成类似 `root@debian:~#` 的样子。**从这里开始，后面所有命令都输在这个窗口里**，你操作的就是那台 VPS 了。
+4. 想断开时输入 `exit` 回车。注意：直接关窗口也行，但第 6 步之前，机器人是跟着你的连接窗口活的，窗口关了它就停——所以才有第 7 步的 systemd 托管。
+
+> 如果提示 `Permission denied`，多半是密码输错了（注意大小写、有没有多复制了空格），或者端口不对。再不行就去商家后台重置 root 密码。
+
+## 第 3 步：装环境和代码
+
+以下命令都在 VPS 的 SSH 窗口里一条一条输（每输完一条按回车，等它执行完再输下一条）。
+
+先装两个基础工具（Debian / Ubuntu 通用）：
+
+```bash
+apt update && apt install -y git curl
+```
+
+装 Node.js 20（项目要求 Node 20 或更高）。用 NodeSource 官方源：
+
+```bash
+curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
+apt install -y nodejs
+node -v
+```
+
+最后一条 `node -v` 如果输出 `v20.x.x`（如 `v20.20.2`），说明 Node 装好了。
+
+> 如果你的系统不是 Debian/Ubuntu，或者上面脚本报错，也可以去 https://nodejs.org 下载官方 Linux 二进制包，解压到 `/usr/local` 使用，效果一样。
+
+下载本项目代码并安装依赖：
+
+```bash
+cd /opt
+git clone https://github.com/kurumiZafkiel12/KurumiAIUserbot.git kurumiaiuserbot
 cd kurumiaiuserbot
 npm install
 ```
 
-## 配置 .env
+- `git clone` 是把代码下载到 `/opt/kurumiaiuserbot` 文件夹。
+- `npm install` 是按项目清单把依赖包装好，需要等 1～2 分钟；看到 `added xxx packages` 就是装完了。中间滚过一堆文字是正常的，只要最后没有红色的 `npm error` 就行。
+- 之后本教程所有命令都默认你在这个目录里（`/opt/kurumiaiuserbot`）。如果重连了 SSH，先 `cd /opt/kurumiaiuserbot` 回来再操作。
 
-复制示例文件：
+## 第 4 步：填配置 .env
+
+项目用一个叫 `.env` 的文件存所有凭证。先复制一份模板出来：
 
 ```bash
 cp .env.example .env
 ```
 
-逐项说明：
+然后用系统自带的文本编辑器 nano 打开它：
 
-| 变量 | 必填 | 说明 |
+```bash
+nano .env
+```
+
+nano 的操作只需要记住三件事：**方向键**移动光标，直接打字就能改；改完按 `Ctrl + O` 再回车是保存；`Ctrl + X` 是退出。（屏幕底部有一排 `^O` 之类的提示，`^` 就是 Ctrl 键。）
+
+把下面这些逐项改成你自己的（等号右边就是要填的值，不要加引号、不要留空格）：
+
+| 变量 | 必填 | 填什么 |
 |---|---|---|
-| `TELEGRAM_API_ID` | 是 | 上一步申请到的 api_id，纯数字 |
-| `TELEGRAM_API_HASH` | 是 | 上一步申请到的 api_hash |
+| `TELEGRAM_API_ID` | 是 | 第 1 步申请到的 api_id，纯数字 |
+| `TELEGRAM_API_HASH` | 是 | 第 1 步申请到的 api_hash |
 | `MY_USERNAME` | 是 | 机器人小号的用户名，不带 `@`。别人 `@` 这个名字就能触发它 |
-| `OWNER_ID` | 是 | 你大号的**数字 ID**（不是用户名）。只有这个 ID 发出的号主命令才有效。查自己 ID 的办法：给任意一个查 ID 的机器人发消息，或看你客户端的个人资料页（部分第三方客户端会显示） |
-| `AI_API_KEY` | 是 | 默认 AI 接口的密钥 |
-| `AI_API_BASE` | 是 | 默认 AI 接口地址，OpenAI 兼容格式，一般以 `/v1` 结尾，如 `https://api.openai.com/v1`，或你的中转服务地址 |
-| `AI_API_MODEL` | 是 | 默认模型名，如 `gpt-4o-mini`，以你的接口实际支持为准 |
+| `OWNER_ID` | 是 | 你**大号的数字 ID**（不是用户名）。只有这个 ID 发出的号主命令才有效，填错了号主命令会完全没反应。查自己 ID 的办法：在 Telegram 里搜索并打开任意一个「查 ID」机器人（如 `@userinfobot`），给它发任意消息，它就会回复你的数字 ID |
+| `AI_API_KEY` | 是 | 你买的 AI 接口的密钥，一般 `sk-` 开头 |
+| `AI_API_BASE` | 是 | AI 接口地址，OpenAI 兼容格式，一般以 `/v1` 结尾，如 `https://api.openai.com/v1`，或你的中转服务给的地址。**结尾别多打空格，`/v1` 别漏** |
+| `AI_API_MODEL` | 是 | 模型名，如 `gpt-4o-mini`，以你的接口实际支持的为准，名字写错会报错 |
 | `TIMEZONE` | 否 | 时区，默认 `Asia/Shanghai`，影响名字时钟 |
 | `NAME_PREFIX` | 否 | 名字时钟前缀，默认 `GPT`，显示成「GPT 13:45」 |
 | `NAME_CLOCK` | 否 | `true` 开启名字时钟，`false` 关闭，默认开启 |
 
-## 首次登录
+填好保存退出。`.env` 里全是密钥，不要截图发给任何人。
+
+## 第 5 步：首次登录
+
+让机器人小号在服务器上登录一次（只需这一次）：
 
 ```bash
 npm run login
@@ -109,19 +199,32 @@ npm run login
 2. 输入手机号后，验证码**一般不走短信**，而是出现在 Telegram 应用里的 **“Telegram”官方服务通知对话**中。打开任意已登录该小号的客户端查看那串数字，回到终端输入。
 3. 如果小号开了**两步验证**，接着输入两步验证密码（没开就直接回车）。
 4. 整个过程必须**一口气在同一次运行里完成**：中途关掉终端重来，验证码会失效并报错 `PHONE_CODE_EXPIRED`。
-5. 成功后会话会存到项目目录的 `.ai-session` 文件里。之后启动不用再输验证码，除非会话被 Telegram 注销。
+5. 成功后会话会存到项目目录的 `.ai-session` 文件里。之后启动不用再输验证码，除非会话被 Telegram 注销。这个文件等于账号的钥匙，**千万不要外泄**。
 
-## 启动
+## 第 6 步：启动并测试
 
 ```bash
 npm start
 ```
 
-看到日志 `登录成功：@xxx，开始监听消息...` 就是跑起来了。`Ctrl+C` 停止。
+看到日志 `登录成功：@xxx，开始监听消息...` 就是跑起来了。先别关窗口，拿你的**大号**做两个测试：
 
-## 用 systemd 常驻（可选）
+1. **私聊测试**：用大号给小号发消息：`@小号用户名 你好`（私聊里也要带上 @ 用户名或触发词才会触发，见「使用方法」）。
+2. **群聊测试**：把小号拉进任意一个群，在群里发 `@小号用户名 你好`，或者直接**回复它发的消息**提问。
 
-在 Linux 服务器上可以用 systemd 让它开机自启、崩溃自动拉起。新建 `/etc/systemd/system/kurumiaiuserbot.service`：
+它先回一条「正在思考中」，几秒后原地变成答案，就是成功了。如果完全没反应，先按文末「常见问题排错」里的自查清单走一遍。
+
+停止：在运行窗口按 `Ctrl + C`。注意这种方式启动的话，**关掉 SSH 窗口机器人也会停**——想让它全天在线，做下一步。
+
+## 第 7 步：让它 24 小时在线（systemd）
+
+systemd 是 Linux 自带的「托管服务」：让它开机自启、崩溃自动拉起、关掉你的 SSH 窗口也不受影响。新建服务文件：
+
+```bash
+nano /etc/systemd/system/kurumiaiuserbot.service
+```
+
+把下面内容原样粘贴进去（nano 里粘贴一般是右键或 `Ctrl + Shift + V`），保存退出：
 
 ```ini
 [Unit]
@@ -141,13 +244,23 @@ MemoryMax=400M
 WantedBy=multi-user.target
 ```
 
-`WorkingDirectory` 改成你的实际安装路径，`node` 路径用 `which node` 查。然后：
+说明：`WorkingDirectory` 是项目目录，如果你没装在 `/opt/kurumiaiuserbot` 就改成你的实际路径；`node` 的路径如果不确定，用 `which node` 查，查出来是 `/usr/bin/node` 就把 ExecStart 里改成那个。
+
+然后依次执行：
 
 ```bash
-sudo systemctl daemon-reload
-sudo systemctl enable --now kurumiaiuserbot
+sudo systemctl daemon-reload            # 让 systemd 读到新服务
+sudo systemctl enable --now kurumiaiuserbot   # 设为开机自启，并立刻启动
+sudo systemctl status kurumiaiuserbot   # 看状态：显示 active (running) 就是在跑
+```
+
+以后日常运维记住这 4 条就够了：
+
+```bash
+sudo systemctl restart kurumiaiuserbot  # 重启（改完 .env / config.json 后要重启才生效）
+sudo systemctl stop kurumiaiuserbot     # 停止
 sudo systemctl status kurumiaiuserbot   # 看状态
-journalctl -u kurumiaiuserbot -f        # 看日志
+journalctl -u kurumiaiuserbot -f        # 实时看日志（排错就看这个；Ctrl+C 退出看日志，不影响机器人运行）
 ```
 
 ## 使用方法
@@ -203,9 +316,26 @@ journalctl -u kurumiaiuserbot -f        # 看日志
 }
 ```
 
-改完 config.json 需要重启程序生效。`config.json` 里包含密钥，项目已把它列入 `.gitignore`，不要手工提交。
+改完 config.json 需要重启程序生效（`sudo systemctl restart kurumiaiuserbot`）。`config.json` 里包含密钥，项目已把它列入 `.gitignore`，不要手工提交。
+
+## 费用大概多少
+
+- **VPS**：约 20～50 元/月（1 核 1G 的小配置足够；年付通常更便宜）。
+- **Telegram 小号、api_id 申请**：免费。
+- **AI 接口**：按你调用的量计费（按 token 量）。个人和群友日常聊天量不大，中转服务充个几块到几十块能用很久；记得在 config.json 里给模型设每日限额（`dailyLimits`），防止被人刷爆产生大额费用。
+- 合计：最低成本就是一台 VPS 的月费 + 少量 API 余额。
 
 ## 常见问题排错
+
+先记住一个通用方法：**机器人不对劲，先看日志**。日志在两个地方：运行窗口里滚动的输出，和项目目录 `logs/` 文件夹里按天存的文件（systemd 运行时用 `journalctl -u kurumiaiuserbot -f` 看）。所有报错都会写进日志，照着报错内容对下面的条目基本都能解决。
+
+### 机器人完全不理人（先走这个自查清单）
+
+1. 进程还活着吗？`sudo systemctl status kurumiaiuserbot` 看是不是 `active (running)`；不是就 `sudo systemctl restart kurumiaiuserbot` 再看日志报什么。
+2. 触发方式对吗？必须 `@机器人用户名`、用触发词（如 `@ai`），或**回复机器人发的消息**，三种方式之一才会触发；直接在群里说话它是不理的。
+3. 是不是在冷却中？普通用户两次提问至少间隔 5 秒（可配），太急了它不回。
+4. 号主命令没反应？先查 `.env` 里 `OWNER_ID` 填的是不是你**大号的数字 ID**（填成用户名或填了小号的 ID 都不行）。
+5. 上面都没问题，就看日志里有没有报错，按下面对应条目处理。
 
 ### 私聊不回复，群里却正常（或反过来）
 
@@ -222,7 +352,7 @@ client.addEventHandler(handler, new NewMessage({}));
 
 ### 发了问题，只停在“正在思考中”不动 / 没有任何回复
 
-先看日志：程序日志在控制台和 `logs/` 目录里，**所有处理异常都会写进日志**。常见原因：
+先看日志。常见原因：
 
 - AI 接口报错（密钥错、地址错、模型名不存在、余额不足）：日志里有 `提供方 xxx 回答失败：...`，按报错修 `.env`。
 - 每个提供方都失败时，占位消息会被改成“所有模型都暂时不可用”。
@@ -230,7 +360,7 @@ client.addEventHandler(handler, new NewMessage({}));
 
 ### 在群里不回复：USER_BANNED_IN_CHANNEL
 
-日志里出现 `发送占位消息失败 ... USER_BANNED_IN_CHANNEL`，说明机器人号在**那个群里被禁言了**（群管理机器人自动禁言或管理员手动禁言都可能）。程序再怎么重试也发不出消息，只能找群管理解除禁言。触发点通常是：短时间频繁测试、反复发占位/编辑消息被守卫机器人当成刷屏。测试时放慢频率。
+日志里出现 `发送占位消息失败 ... USER_BANNED_IN_CHANNEL`，说明机器人号在**那个群里被禁言了**（群管理机器人自动禁言或管理员手动禁言都可能）。程序再怎么重试也发不出消息，只能找群管理解除禁言。另外 Telegram 官方的 @SpamBot 也可能对账号下**账号级限制**（新号 + 服务器 IP + 高频发消息容易触发），这种限制下私聊能回、群里发不出，和群禁言是两回事，要走 SpamBot 申诉或换号。触发点通常是：短时间频繁测试、反复发占位/编辑消息被当成刷屏。**测试时放慢频率，别拿新号在公开大群里高频刷。**
 
 ### 验证码收不到 / 发错区号
 
@@ -248,13 +378,20 @@ client.addEventHandler(handler, new NewMessage({}));
 - 客户端里看到的名字可能有缓存，点进机器人资料页刷新再看。
 - 同一分钟内不会重复改名；跨分钟才刷新。
 
+### 命令相关的小问题
+
+- 输命令提示 `command not found`：多半是命令输错了，或者还没装对应的东西（比如没装 Node 就输 `node -v`）。对照教程检查拼写和步骤顺序。
+- `npm install` 报错：先确认在项目目录里（`pwd` 应显示 `/opt/kurumiaiuserbot`），且 `node -v` 是 20 以上；网络不通时多重试一次。
+- nano 里改完不会保存：记住 `Ctrl + O` 回车保存、`Ctrl + X` 退出；退出时它问 `Save modified buffer?` 就按 `Y` 再回车。
+
 ## 安全提醒
 
 - **只用小号跑**，不要用主账号。userbot 行为（自动回复、高频编辑消息）有被 Telegram 风控甚至封号的可能。
 - **api_id / api_hash、`.ai-session`、`.env`、`config.json` 都不要外泄、不要提交到公开仓库**。`.ai-session` 泄露等于账号被别人登录；本项目已把它们都写进 `.gitignore`。
-- 不要图省事用网上流传的“Telegram Desktop 公开 api_id（2040）”之类**共享凭证**：那是给官方客户端用的，拿来跑 userbot 风控更严、容易触发限制，而且同一账号以后必须一直用同一套凭证登录。老老实实去 my.telegram.org 申请自己的（一分钟的事）。
+- 不要用网上流传的「Telegram Desktop 公开 api_id（2040）」之类**共享凭证**：那是给官方客户端用的，拿来跑 userbot 风控更严、容易触发限制，而且同一账号以后必须一直用同一套凭证登录。老老实实去 my.telegram.org 申请自己的（一分钟的事）。
 - AI 接口的密钥只放在 `.env` / `config.json` 里，不要写进代码、不要截图发出去。
 - 给模型设每日限额（见 config.json 的 `dailyLimits`），避免被刷爆额度产生费用。
+- 刚上线头几天别让它在公开大群里高频发言，新号 + 机房 IP 本来就是风控重点观察对象。
 
 ## 目录结构
 
