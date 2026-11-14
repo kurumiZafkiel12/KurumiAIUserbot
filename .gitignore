@@ -4,3 +4,5 @@ node_modules/
 logs/
 *.log
 config.json
+facts.json
+profiles.json
