@@ -12,7 +12,9 @@ import {
   isOwner,
   ownerNote,
   describeRole,
+  shouldPauseBlock,
 } from "./permissions.js";
+import { RuntimeState } from "./state.js";
 
 const EDIT_INTERVAL_MS = 1500; // 流式刷新占位消息的最短间隔
 const TG_MESSAGE_LIMIT = 4000; // Telegram 单条消息上限约 4096，留点余量分片
@@ -21,13 +23,14 @@ const CONSOLIDATE_EVERY = 8; // 每会话每答满 N 次，后台自动整理一
 
 /**
  * 创建消息处理函数（签名符合 GramJS 的 addEventHandler 回调）。
- * @param {object} deps { client, config, pool, store, logger, startedAt, notebook, profiles }
- *   notebook / profiles 可省略，省略时用纯内存版（不落盘），方便测试与临时运行。
+ * @param {object} deps { client, config, pool, store, logger, startedAt, notebook, profiles, state }
+ *   notebook / profiles / state 可省略，省略时用纯内存版（不落盘），方便测试与临时运行。
  */
 export function createHandler(deps) {
   const { client, config, pool, store, logger, startedAt } = deps;
   const notebook = deps.notebook || new Notebook(null);
   const profiles = deps.profiles || new UserProfiles(null);
+  const state = deps.state || new RuntimeState(null);
 
   const blacklist = new Set(config.blacklist || []);
   /** @type {Set<string>} 管理员名单（创建者用命令增删，持久化在 config.json） */
@@ -204,9 +207,21 @@ export function createHandler(deps) {
       const upSec = Math.floor((Date.now() - startedAt) / 1000);
       await reply(
         msg,
-        `运行状态：正常\n已运行：${Math.floor(upSec / 60)} 分 ${upSec % 60} 秒\n提供方数量：${pool.entries.length}\n名字时钟：${config.nameClock ? "开" : "关"}`,
+        `运行状态：正常\n已运行：${Math.floor(upSec / 60)} 分 ${upSec % 60} 秒\n提供方数量：${pool.entries.length}\n名字时钟：${config.nameClock ? "开" : "关"}\n全局开关：${state.isPaused() ? "已关闭（暂停回复中，号主命令仍可用）" : "开启（正常回复）"}`,
       );
       return;
+    }
+
+    if (cmd === "关闭") {
+      if (state.isPaused()) return reply(msg, "已经是关闭状态了。发 @ai 开启 恢复回复。");
+      state.setPaused(true);
+      return reply(msg, "已关闭：现在起任何人的提问我都不再回复、不调用模型（你的号主命令除外）。发 @ai 开启 恢复。");
+    }
+
+    if (cmd === "开启") {
+      if (!state.isPaused()) return reply(msg, "本来就是开启状态，正常回复中。");
+      state.setPaused(false);
+      return reply(msg, "已开启：恢复正常回复。");
     }
 
     if (cmd === "账单" || cmd === "用量") {
@@ -303,7 +318,7 @@ export function createHandler(deps) {
 
     return reply(
       msg,
-      "未知命令。可用：状态、账单、拉黑 <ID>、解封 <ID>、加管理员 <ID>、删管理员 <ID>、管理员列表、记住 <内容>、记事本、忘掉 <序号>、清空记事本、清空上下文、绑定列表",
+      "未知命令。可用：状态、开启、关闭、账单、拉黑 <ID>、解封 <ID>、加管理员 <ID>、删管理员 <ID>、管理员列表、记住 <内容>、记事本、忘掉 <序号>、清空记事本、清空上下文、绑定列表",
     );
   }
 
@@ -453,6 +468,14 @@ export function createHandler(deps) {
           await handleOwnerCommand(msg, chatId, senderId, body);
           return;
         }
+      }
+
+      // 全局暂停门禁：创建者用 @ai 关闭 后，谁的提问都不回、不调模型（省 token）。
+      // 号主命令在上面已经处理完并 return，能走到这里的都是普通消息；
+      // shouldPauseBlock 对创建者本人放行，其余人一律静默忽略。
+      if (shouldPauseBlock(state.isPaused(), senderId, permConfig())) {
+        logger.info(`全局暂停中，忽略用户 ${senderId} 的消息（chat=${chatId}）`);
+        return;
       }
 
       // 私聊门禁：privateChat="admins" 时普通用户的私聊静默不回；群聊不受影响。
