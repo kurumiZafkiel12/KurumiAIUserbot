@@ -10,6 +10,7 @@ import {
   canUsePrivateChat,
   ownerNote,
   describeRole,
+  shouldPauseBlock,
 } from "../src/permissions.js";
 
 const CFG = { ownerId: "111", adminIds: ["222", "333"], privateChat: "all" };
@@ -78,4 +79,17 @@ test("describeRole：创建者/管理员有标注，普通用户返回 null", ()
   assert.match(describeRole("111", CFG), /创建者本人/);
   assert.match(describeRole("222", CFG), /管理员/);
   assert.equal(describeRole("999", CFG), null);
+});
+
+test("shouldPauseBlock：没暂停时谁都不拦", () => {
+  assert.equal(shouldPauseBlock(false, "999", CFG), false);
+  assert.equal(shouldPauseBlock(false, "111", CFG), false);
+  assert.equal(shouldPauseBlock(undefined, "999", CFG), false);
+});
+
+test("shouldPauseBlock：暂停时普通用户和管理员都拦，只有创建者放行", () => {
+  assert.equal(shouldPauseBlock(true, "999", CFG), true); // 普通用户：拦
+  assert.equal(shouldPauseBlock(true, "222", CFG), true); // 管理员：也拦，暂停不给任何人开口子
+  assert.equal(shouldPauseBlock(true, "111", CFG), false); // 创建者：放行（命令与本人消息不误拦）
+  assert.equal(shouldPauseBlock(true, 111, CFG), false); // 数字 ID 混用也能认
 });
