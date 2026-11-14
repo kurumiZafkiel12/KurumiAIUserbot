@@ -4,6 +4,8 @@
 import { parseTrigger, parseOwnerCommand, TRIGGER_WORDS } from "./triggers.js";
 import { saveConfigJson } from "./config.js";
 import { balanceReport } from "./billing.js";
+import { Notebook } from "./notebook.js";
+import { UserProfiles, extractCallName } from "./profiles.js";
 import {
   canRunOwnerCommand,
   canUsePrivateChat,
@@ -15,12 +17,17 @@ import {
 const EDIT_INTERVAL_MS = 1500; // 流式刷新占位消息的最短间隔
 const TG_MESSAGE_LIMIT = 4000; // Telegram 单条消息上限约 4096，留点余量分片
 
+const CONSOLIDATE_EVERY = 8; // 每会话每答满 N 次，后台自动整理一次记事本与印象
+
 /**
  * 创建消息处理函数（签名符合 GramJS 的 addEventHandler 回调）。
- * @param {object} deps { client, config, pool, store, logger, startedAt }
+ * @param {object} deps { client, config, pool, store, logger, startedAt, notebook, profiles }
+ *   notebook / profiles 可省略，省略时用纯内存版（不落盘），方便测试与临时运行。
  */
 export function createHandler(deps) {
   const { client, config, pool, store, logger, startedAt } = deps;
+  const notebook = deps.notebook || new Notebook(null);
+  const profiles = deps.profiles || new UserProfiles(null);
 
   const blacklist = new Set(config.blacklist || []);
   /** @type {Set<string>} 管理员名单（创建者用命令增删，持久化在 config.json） */
@@ -53,7 +60,144 @@ export function createHandler(deps) {
     }
   }
 
-  async function handleOwnerCommand(msg, senderId, body) {
+  /**
+   * 发言者身份段：describeRole 的身份标注（创建者/管理员）+ 称呼与历史标签的对应关系。
+   * 历史里每条用户消息都带「名字：」标签，这里告诉模型标签和当前说话人的对应关系，
+   * 并交代称呼优先：有 callName 时用称呼，不用显示名。
+   */
+  function speakerSegment(senderId, speakerName) {
+    const parts = [];
+    const role = describeRole(senderId, permConfig());
+    if (role) parts.push(role);
+    const callName = profiles.callName(senderId);
+    if (callName && speakerName && callName !== speakerName) {
+      parts.push(
+        `当前说话人的显示名是「${speakerName}」，他希望被称呼为「${callName}」。跟他说话、提到他、转述他的话时都用「${callName}」，不要用显示名。本会话历史中标为「${speakerName}：」或「${callName}：」开头的消息，都是他本人说的；别人说过的话不要算到他头上。`,
+      );
+    } else if (callName) {
+      parts.push(
+        `当前说话人希望被称呼为「${callName}」。跟他说话、提到他、转述他的话时都用这个称呼。本会话历史中标为「${callName}：」开头的消息，都是他本人说的。`,
+      );
+    } else if (speakerName) {
+      parts.push(
+        `当前说话人的显示名是「${speakerName}」。本会话历史中标为「${speakerName}：」开头的消息，就是他本人说的；别人说过的话不要算到他头上。`,
+      );
+    }
+    return parts.join("\n");
+  }
+
+  /** 印象段：只调语气、绝不外泄。没有印象时返回空串（不注入）。 */
+  function impressionSegment(senderId) {
+    const imp = profiles.impression(senderId);
+    if (!imp) return "";
+    return `系统备注（只用来调整你跟当前说话人说话的语气和熟络程度，不要念出来，也不要把内容告诉任何其他人）：你对当前说话人的印象：${imp}`;
+  }
+
+  /** 记事本段：当前会话的长期事实，要求用自己的话转述、不照抄不报出处。空时返回空串。 */
+  function notebookSegment(chatId) {
+    const rendered = notebook.render(chatId);
+    if (!rendered) return "";
+    return `系统备注：这些是你记住的、本会话的事（只属于当前会话，别的会话不要提）。被问到时用你自己的话自然地讲出来，就像你本来就记得一样：不要照抄下面的条目原文，不要动不动说「谁说的」，只有被追问来源时才提一句出处。\n${rendered}`;
+  }
+
+  /** 用提供方池问模型一次（非流式用途：后台整理）。拿不到提供方返回 null，失败抛错由调用方记日志。 */
+  async function askModelOnce(messages) {
+    const entry = pool.pick(new Set());
+    if (!entry) return null;
+    try {
+      const text = await pool.chat(entry, messages, null);
+      pool.markSuccess(entry);
+      return text;
+    } catch (err) {
+      pool.markFailure(entry, err);
+      throw err;
+    }
+  }
+
+  /** @type {Map<string, number>} 每会话（chatId:senderId）累计回答数 */
+  const answerCounts = new Map();
+  /** @type {Set<string>} 正在后台整理中的会话 key，防并发 */
+  const consolidating = new Set();
+
+  /**
+   * 后台整理：让模型把「现有记事本 + 最近对话」重整成一份完整的记事本并回存，
+   * 同轮再用该用户最近的发言样本刷新对他的印象。慢工细活，绝不阻塞正常回复；
+   * 任何异常只记日志。同一会话同时只跑一份。
+   */
+  async function consolidateNotebook(chatId, senderId) {
+    const key = `${chatId}:${senderId}`;
+    if (consolidating.has(key)) return;
+    consolidating.add(key);
+    try {
+      const history = store.get(chatId, senderId);
+      if (history.length === 0) return;
+      const convo = history
+        .map((m) => (m.role === "user" ? m.content : `机器人：${m.content}`))
+        .join("\n");
+      const existing = notebook.render(chatId) || "（空）";
+      const out = await askModelOnce([
+        { role: "system", content: "你是一个记事本整理助手，只做整理，不闲聊。" },
+        {
+          role: "user",
+          content:
+            "下面是某个 Telegram 会话的「记事本」（机器人长期记住的事）和最近的对话记录。请输出整理后的完整记事本。\n\n" +
+            "要求：\n" +
+            "- 合并同一个人不同称呼/别名的条目，删掉过时、矛盾或明显记错的，加上对话里新出现的、值得长期记住的事实\n" +
+            "- 每条一行、以「- 」开头，最多 25 条，一条只写一件事，尽量带上是谁的事或谁说的（如「小明：喜欢吃辣」）\n" +
+            "- 只记公开的日常事实；不要记密码、住址、电话、财务等隐私\n" +
+            "- 不要以机器人自己为主语记条目\n" +
+            "- 没有任何可记内容时，只输出「（空）」\n\n" +
+            `【现有记事本】\n${existing}\n\n【最近对话】\n${convo}`,
+        },
+      ]);
+      if (out && out.trim() !== "（空）") {
+        const lines = out.split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
+        if (notebook.replace(chatId, lines)) {
+          logger.info(`记事本已自动整理（chat=${chatId}，现有 ${notebook.facts(chatId).length} 条）`);
+        }
+      }
+
+      // 印象更新：样本取该用户最近的发言；模型说「保留」或没产出就沿用旧印象。
+      const samples = history.filter((m) => m.role === "user").slice(-8);
+      if (samples.length > 0) {
+        const oldImp = profiles.impression(senderId);
+        const imp = await askModelOnce([
+          { role: "system", content: "你是一个观察助手，只做概括，不闲聊。" },
+          {
+            role: "user",
+            content:
+              "根据下面这个人最近的发言，概括你对他的印象：一到两句中文，只记说话风格、常聊的话题、氛围和公开的日常小事，" +
+              "不要记密码、住址、电话、财务等隐私。只输出印象本身，不要加任何前缀。" +
+              (oldImp ? `已有印象是：「${oldImp}」。有新信息就给出更新后的完整印象，没有新信息就只回复「保留」。` : "") +
+              `\n\n【他的最近发言】\n${samples.map((m) => m.content).join("\n")}`,
+          },
+        ]);
+        const text = (imp || "").trim();
+        if (text && !text.startsWith("保留")) {
+          profiles.setImpression(senderId, text.slice(0, 200));
+          logger.info(`用户印象已更新（user=${senderId}）`);
+        }
+      }
+    } catch (err) {
+      logger.error(`后台整理记事本失败（chat=${chatId}）：${err.message}`);
+    } finally {
+      consolidating.delete(key);
+    }
+  }
+
+  /** 记一次成功回答；每满 CONSOLIDATE_EVERY 次就在后台触发一次整理（不 await）。 */
+  function noteAnswerAndMaybeConsolidate(chatId, senderId) {
+    const key = `${chatId}:${senderId}`;
+    const n = (answerCounts.get(key) || 0) + 1;
+    answerCounts.set(key, n);
+    if (n % CONSOLIDATE_EVERY === 0) {
+      consolidateNotebook(chatId, senderId).catch((err) =>
+        logger.error(`后台整理异常（chat=${chatId}）：${err.message}`),
+      );
+    }
+  }
+
+  async function handleOwnerCommand(msg, chatId, senderId, body) {
     const [cmd, ...rest] = body.split(/\s+/);
 
     if (cmd === "状态") {
@@ -114,6 +258,35 @@ export function createHandler(deps) {
       return reply(msg, `管理员名单（共 ${adminIds.size} 人）：\n${lines.join("\n")}`);
     }
 
+    if (cmd === "记住") {
+      const content = rest.join(" ").trim();
+      if (!content) return reply(msg, "用法：@ai 记住 <内容>");
+      const added = notebook.addFacts(chatId, [content]);
+      if (added > 0) return reply(msg, `记好了：${content}`);
+      return reply(msg, "这条没记上：记事本里已经有了，或它是以机器人为主语的内容。");
+    }
+
+    if (cmd === "记事本") {
+      const list = notebook.facts(chatId);
+      if (list.length === 0) {
+        return reply(msg, "当前会话的记事本是空的。用 @ai 记住 <内容> 手工加一条；平时聊天答满次数也会自动整理。");
+      }
+      const lines = list.map((f, i) => `${i + 1}. ${f}`);
+      return reply(msg, `当前会话记事本（共 ${list.length} 条）：\n${lines.join("\n")}`);
+    }
+
+    if (cmd === "忘掉") {
+      const target = (rest[0] || "").trim();
+      const removed = notebook.removeAt(chatId, Number(target));
+      if (removed) return reply(msg, `已忘掉第 ${target} 条：${removed}`);
+      return reply(msg, "用法：@ai 忘掉 <序号>（序号看 @ai 记事本）");
+    }
+
+    if (cmd === "清空记事本") {
+      const n = notebook.clear(chatId);
+      return reply(msg, `已清空当前会话记事本（原有 ${n} 条）`);
+    }
+
     if (cmd === "清空上下文") {
       const n = store.clearAll();
       return reply(msg, `已清空全部对话上下文（${n} 组）`);
@@ -130,11 +303,11 @@ export function createHandler(deps) {
 
     return reply(
       msg,
-      "未知命令。可用：状态、账单、拉黑 <ID>、解封 <ID>、加管理员 <ID>、删管理员 <ID>、管理员列表、清空上下文、绑定列表",
+      "未知命令。可用：状态、账单、拉黑 <ID>、解封 <ID>、加管理员 <ID>、删管理员 <ID>、管理员列表、记住 <内容>、记事本、忘掉 <序号>、清空记事本、清空上下文、绑定列表",
     );
   }
 
-  async function handleChat(msg, chatId, senderId, parsed) {
+  async function handleChat(msg, chatId, senderId, speakerName, parsed) {
     if (!parsed.question) {
       await reply(msg, "在触发词后面写上你的问题，例如：@ai 今天天气怎么样");
       return;
@@ -163,12 +336,17 @@ export function createHandler(deps) {
     }
 
     const history = store.get(chatId, senderId);
-    // 系统提示 = 基础提示 + 创建者信息（认主）+ 当前发言者身份标注（创建者/管理员才有）。
+    // 系统提示 = 基础提示 + 创建者信息（认主）+ 发言者身份/称呼 + 对他的印象 + 本会话记事本。
+    // 后三段都是程序生成的系统级信息，不是用户能伪造的。
     const systemParts = [config.systemPrompt];
     const on = ownerNote(config);
     if (on) systemParts.push(on);
-    const role = describeRole(senderId, permConfig());
+    const role = speakerSegment(senderId, speakerName);
     if (role) systemParts.push(role);
+    const imp = impressionSegment(senderId);
+    if (imp) systemParts.push(imp);
+    const nb = notebookSegment(chatId);
+    if (nb) systemParts.push(nb);
     const messages = [
       { role: "system", content: systemParts.join("\n") },
       ...history,
@@ -218,8 +396,12 @@ export function createHandler(deps) {
     }
 
     // 保存上下文（问题 + 回答），下次提问能接上话。
-    store.push(chatId, senderId, "user", parsed.question);
+    // 用户消息带发言者标签（称呼优先，其次显示名），模型靠标签区分谁是谁，
+    // 与 speakerSegment 里交代的「标为 X：开头的就是他本人说的」对应。
+    const label = profiles.callName(senderId) || speakerName || "";
+    store.push(chatId, senderId, "user", label ? `${label}：${parsed.question}` : parsed.question);
     store.push(chatId, senderId, "assistant", answer);
+    noteAnswerAndMaybeConsolidate(chatId, senderId);
 
     // 最终答案：先编辑占位消息；超长时剩余部分分片续发。
     try {
@@ -259,11 +441,16 @@ export function createHandler(deps) {
 
       if (blacklist.has(senderId)) return;
 
+      // 称呼捕捉：任何人亲口在自己消息里说「叫我 X」，就把 X 记进他的档案（持久化）。
+      // extractCallName 规则很严（取最后一个「叫我」、否定与屏蔽词都排除），没命中返回 null 不做事。
+      const cn = extractCallName(text);
+      if (cn) profiles.setCallName(senderId, cn);
+
       // 号主命令：必须是创建者本人，且以 “@ai ” 开头。
       if (canRunOwnerCommand(senderId, permConfig())) {
         const body = parseOwnerCommand(text);
         if (body !== null) {
-          await handleOwnerCommand(msg, senderId, body);
+          await handleOwnerCommand(msg, chatId, senderId, body);
           return;
         }
       }
@@ -282,7 +469,18 @@ export function createHandler(deps) {
       });
       if (!parsed) return;
 
-      await handleChat(msg, chatId, senderId, parsed);
+      // 发言者显示名（给历史标签与身份段用）；拿不到就留空，不影响主流程。
+      let speakerName = "";
+      try {
+        if (typeof event.getSender === "function") {
+          const sender = await event.getSender();
+          if (sender) speakerName = String(sender.firstName || sender.username || "").trim();
+        }
+      } catch {
+        speakerName = "";
+      }
+
+      await handleChat(msg, chatId, senderId, speakerName, parsed);
     } catch (err) {
       // 兜底：处理消息时的任何异常都进日志，不能让它无声消失。
       logger.error(`处理消息时出错：${err.stack || err.message || err}`);
