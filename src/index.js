@@ -9,6 +9,8 @@ import { loadConfig } from "./config.js";
 import { createLogger } from "./logger.js";
 import { ProviderPool } from "./providers.js";
 import { ConversationStore } from "./context.js";
+import { Notebook } from "./notebook.js";
+import { UserProfiles } from "./profiles.js";
 import { createHandler } from "./handlers.js";
 import { startNameClock } from "./nameclock.js";
 
@@ -44,11 +46,18 @@ async function main() {
 
   const pool = new ProviderPool(effectiveConfig.providers, logger);
   const store = new ConversationStore(effectiveConfig.contextSize);
+  // 记事本与用户档案落盘在运行目录，重启不丢；botNames 让记事本过滤「以机器人为主语」的条目。
+  const notebook = new Notebook(path.resolve("facts.json"), {
+    botNames: [effectiveConfig.namePrefix, username],
+  });
+  const profiles = new UserProfiles(path.resolve("profiles.json"));
   const handler = createHandler({
     client,
     config: effectiveConfig,
     pool,
     store,
+    notebook,
+    profiles,
     logger,
     startedAt: Date.now(),
   });
