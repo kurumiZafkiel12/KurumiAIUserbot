@@ -41,7 +41,7 @@ export class ProviderPool {
     }
   }
 
-  /** 按名字查提供方（触发词绑定用）。 */
+  /** 按名字查提供方（按名取默认提供方用）。 */
   getByName(name) {
     return this.entries.find((e) => e.name === name) || null;
   }
@@ -80,7 +80,7 @@ export class ProviderPool {
   /**
    * 加权挑选一个提供方。
    * @param {Set<string>} exclude 已尝试过、本轮排除的名字
-   * @param {string|null} preferred 优先尝试的名字（触发词绑定）；不可用时回退到加权挑选
+   * @param {string|null} preferred 优先尝试的名字（默认提供方）；不可用时回退到加权挑选
    */
   pick(exclude = new Set(), preferred = null, now = Date.now()) {
     if (preferred) {
