@@ -131,3 +131,37 @@ test("resolveProvider 回退规则", () => {
   assert.equal(resolveProvider("@ai", { "@ai": "x" }), "x");
   assert.equal(resolveProvider("@aq", {}), null);
 });
+
+test("resolveProvider 支持号主设的默认提供方", () => {
+  assert.equal(resolveProvider("@ai", {}, "relay-a"), "relay-a");
+  assert.equal(resolveProvider("@ai", { "@ai": "x" }, "relay-a"), "x"); // 显式绑定优先
+  assert.equal(resolveProvider("@ai", {}, ""), "default");
+  assert.equal(resolveProvider("@aq", {}, "relay-a"), null); // 非默认触发词不吃这个回退
+});
+
+test("parseTrigger 透传默认提供方", () => {
+  const r = parseTrigger("@ai 你好", { username: "mybot", triggerMap: {}, defaultProvider: "relay-a" });
+  assert.equal(r.providerName, "relay-a");
+  const m = parseTrigger("@mybot 你好", { username: "mybot", triggerMap: {}, defaultProvider: "relay-a" });
+  assert.equal(m.providerName, "relay-a");
+});
+
+test("用户名触发关闭时，普通用户的 @用户名 不触发，但触发词照常", () => {
+  const opts = { username: "mybot", triggerMap: {}, usernameTrigger: false, role: "user" };
+  assert.equal(parseTrigger("@mybot 你好", opts), null);
+  const r = parseTrigger("@ai 你好", opts);
+  assert.equal(r.kind, "trigger");
+  assert.equal(r.question, "你好");
+});
+
+test("用户名触发关闭时，号主与管理员的 @用户名 照常触发", () => {
+  for (const role of ["owner", "admin"]) {
+    const r = parseTrigger("@mybot 你好", { username: "mybot", triggerMap: {}, usernameTrigger: false, role });
+    assert.equal(r.kind, "mention");
+  }
+});
+
+test("用户名触发开启（默认）时普通用户 @用户名 触发", () => {
+  const r = parseTrigger("@mybot 你好", { username: "mybot", triggerMap: {}, role: "user" });
+  assert.equal(r.kind, "mention");
+});
