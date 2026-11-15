@@ -47,7 +47,21 @@
   "sensitiveGroups": [],
   "sensitiveKeywords": [],
   "defaultProvider": "",
-  "providerOverrides": {}
+  "providerOverrides": {},
+  "poJia": "",
+  "visionPool": { "relay-a": [{ "model": "vision-model", "weight": 7 }] },
+  "ttsApiBase": "",
+  "ttsApiKey": "",
+  "voiceBook": { "塔菲": "voice-id-1" },
+  "voicePersona": {},
+  "saySwitch": {},
+  "voiceSwitch": {},
+  "voiceByChat": {},
+  "voiceByChatUser": {},
+  "recordGroups": [],
+  "recordContextLimit": {},
+  "searchApiKey": "",
+  "customName": { "first": "", "last": "" }
 }
 ```
 
@@ -148,6 +162,42 @@
 
 这个字段由号主命令维护，一般不要手工改；手工改完要重启才生效。
 
+### poJia（字符串，可选，默认空，程序也会维护）
+
+破甲内容：注入系统提示时排在人设之前、优先级最高。用 `/ai 破甲 <内容>` 设置、`/ai 清除破甲` 清除。**只应保存在本地 config.json（已在 .gitignore 里），不要提交到任何仓库。**
+
+### visionPool（对象，可选，默认空，程序维护）
+
+识图池：`{ API名字: [{ "model": "识图模型名", "weight": 权重 }] }`。发照片提问时按权重从池里选条目，用该 API 的地址与 key、以条目的 model 发带图请求。用 `/ai 加识图` / `/ai 删识图` / `/ai 识图权重` / `/ai 识图列表` 维护，一般不用手改。
+
+### ttsApiBase / ttsApiKey（字符串，可选，默认空，程序也会维护）
+
+语音合成（TTS）接口地址与 key（Fish Audio 风格：POST 到 ttsApiBase 本身，body 带 text 与 reference_id）。用 `/ai 换tts接口` / `/ai 换ttskey` 改，立即生效；也可以在 .env 里用 `TTS_API_BASE` / `TTS_API_KEY` 兜底（config.json 里写了就以 config.json 为准）。
+
+### voiceBook / voicePersona（对象，程序维护）
+
+音色库 `{ 音色名: 音色ID }` 与音色人格 `{ 音色名: 人格提示词 }`。用 `/ai 加音色` / `/ai 删音色` / `/ai 加人格` / `/ai 删人格` 维护。人格的作用：本群开启「说」且当前音色有人格时，人格会拼进系统提示塑造说话风格，回答文本随后合成语音。
+
+### saySwitch / voiceSwitch（对象，程序维护）
+
+按群开关：`{ 群ID: true/false }`。saySwitch 是「开启说」（回答后追加语音），voiceSwitch 是「开启换音色」（群友可自选音色）。用 `/ai 开启说` 等命令在目标群里切换。
+
+### voiceByChat / voiceByChatUser（对象，程序维护）
+
+音色选择：voiceByChat 是整群的当前音色 `{ 群ID: 音色名 }`（号主选）；voiceByChatUser 是个人在本群的自选音色 `{ "群ID_用户ID": 音色名 }`。挑选顺序：个人 > 整群 > 音色库第一个。
+
+### recordGroups / recordContextLimit（数组 / 对象，程序维护）
+
+recordGroups 是开启了聊天记录的群 ID 列表（`/ai 开启记录`）；recordContextLimit 是每个群回答时带入的最近记录条数 `{ 群ID: 数字 }`（默认 100，`/ai 记录条数` 改）。记录本体存在 records.json（见下方运行时数据文件）。
+
+### searchApiKey（字符串，可选，默认空，程序也会维护）
+
+联网搜索的 key（Serper 风格；问题带「联网搜索」时走 Tavily 深搜，地址可用 searchApiBase / searchApiBase2 覆盖默认）。用 `/ai 换搜索key` 改（写 config.json、不写 .env、立即生效）；.env 的 `SEARCH_API_KEY` 可作兜底。不配则搜索功能整体不启用。
+
+### customName（对象，可选，程序也会维护）
+
+`/ai 改名` 落盘的账号名 `{ "first": 名字, "last": 姓氏 }`。设了之后，名字时钟的显示名用它打头（姓氏 + 时间）替代 .env 的 NAME_PREFIX；没设时维持原前缀逻辑。
+
 ## 最小示例：只加一个备用模型并绑触发词
 
 ```json
@@ -186,6 +236,10 @@
 - `impression`：后台整理记事本时，顺带根据该用户最近发言更新的一两句印象（风格/话题/氛围/公开小事，不记隐私），只用于调整跟他说话的语气，绝不外泄。
 
 想清掉所有人的档案，停机后删掉这个文件再启动。两个文件都已在 `.gitignore` 里，不会被提交到仓库。
+
+### records.json（群聊天记录）
+
+按群保存开启了记录的群的消息（显示名 + 文本 + 时间），每群最多 1000 条、环形覆盖最旧的。回答开启记录的群里的问题时，最近 N 条会拼进系统提示（只给显示名，不给数字 ID）。用 `/ai 开启记录` / `/ai 关闭记录` 控制哪些群记录；想彻底清掉，停机后删掉这个文件再启动。已在 `.gitignore` 里。
 
 ### state.json（运行时状态）
 
