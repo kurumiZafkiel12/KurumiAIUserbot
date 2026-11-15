@@ -33,9 +33,9 @@ export const PLACEHOLDER_TEXT = "（思考中...）";
 
 /**
  * 号主帮助：代码写死的固定文本（不走模型），内容与 handleOwnerCommand 的真实分支逐条对齐。
- * 号主命令两种前缀都能用：@ai 和 /ai（如「@ai 状态」或「/ai 状态」）。
+ * 号主命令只认 /ai 前缀（如「/ai 状态」）；@ai 只是聊天触发词，不是命令前缀。
  */
-export const OWNER_HELP_TEXT = `号主命令帮助（两种前缀都能用：「@ai 状态」或「/ai 状态」）：
+export const OWNER_HELP_TEXT = `号主命令帮助（命令都以 /ai 开头，如「/ai 状态」）：
 
 状态：查看运行状态、已运行时长与全局开关
 账单：查看今日用量与 API 余额（「用量」是它的别名）
@@ -266,9 +266,9 @@ export function createHandler(deps) {
     }
 
     if (cmd === "关闭") {
-      if (state.isPaused()) return reply(msg, "已经是关闭状态了。发 @ai 开启 恢复回复。");
+      if (state.isPaused()) return reply(msg, "已经是关闭状态了。发 /ai 开启 恢复回复。");
       state.setPaused(true);
-      return reply(msg, "已关闭：现在起任何人的提问我都不再回复、不调用模型（你的号主命令除外）。发 @ai 开启 恢复。");
+      return reply(msg, "已关闭：现在起任何人的提问我都不再回复、不调用模型（你的号主命令除外）。发 /ai 开启 恢复。");
     }
 
     if (cmd === "开启") {
@@ -285,7 +285,7 @@ export function createHandler(deps) {
 
     if (cmd === "拉黑") {
       const target = (rest[0] || "").trim();
-      if (!target) return reply(msg, "用法：@ai 拉黑 <用户ID>");
+      if (!target) return reply(msg, "用法：/ai 拉黑 <用户ID>");
       blacklist.add(target);
       persistBlacklist();
       return reply(msg, `已拉黑用户 ${target}`);
@@ -293,7 +293,7 @@ export function createHandler(deps) {
 
     if (cmd === "解封") {
       const target = (rest[0] || "").trim();
-      if (!target) return reply(msg, "用法：@ai 解封 <用户ID>");
+      if (!target) return reply(msg, "用法：/ai 解封 <用户ID>");
       blacklist.delete(target);
       persistBlacklist();
       return reply(msg, `已解封用户 ${target}`);
@@ -301,7 +301,7 @@ export function createHandler(deps) {
 
     if (cmd === "加管理员") {
       const target = (rest[0] || "").trim();
-      if (!target) return reply(msg, "用法：@ai 加管理员 <用户ID>");
+      if (!target) return reply(msg, "用法：/ai 加管理员 <用户ID>");
       if (isOwner(target, permConfig())) return reply(msg, "创建者本人就是最高权限，不用再加为管理员。");
       if (adminIds.has(target)) return reply(msg, `用户 ${target} 已经是管理员了`);
       adminIds.add(target);
@@ -311,7 +311,7 @@ export function createHandler(deps) {
 
     if (cmd === "删管理员") {
       const target = (rest[0] || "").trim();
-      if (!target) return reply(msg, "用法：@ai 删管理员 <用户ID>");
+      if (!target) return reply(msg, "用法：/ai 删管理员 <用户ID>");
       if (!adminIds.has(target)) return reply(msg, `用户 ${target} 不在管理员名单里`);
       adminIds.delete(target);
       persistAdmins();
@@ -320,7 +320,7 @@ export function createHandler(deps) {
 
     if (cmd === "管理员列表") {
       if (adminIds.size === 0) {
-        return reply(msg, "暂无管理员。用 @ai 加管理员 <用户ID> 添加。");
+        return reply(msg, "暂无管理员。用 /ai 加管理员 <用户ID> 添加。");
       }
       const lines = [...adminIds].map((id) => `- ${id}`);
       return reply(msg, `管理员名单（共 ${adminIds.size} 人）：\n${lines.join("\n")}`);
@@ -328,7 +328,7 @@ export function createHandler(deps) {
 
     if (cmd === "记住") {
       const content = rest.join(" ").trim();
-      if (!content) return reply(msg, "用法：@ai 记住 <内容>");
+      if (!content) return reply(msg, "用法：/ai 记住 <内容>");
       const added = notebook.addFacts(chatId, [content]);
       if (added > 0) return reply(msg, `记好了：${content}`);
       return reply(msg, "这条没记上：记事本里已经有了，或它是以机器人为主语的内容。");
@@ -337,7 +337,7 @@ export function createHandler(deps) {
     if (cmd === "记事本") {
       const list = notebook.facts(chatId);
       if (list.length === 0) {
-        return reply(msg, "当前会话的记事本是空的。用 @ai 记住 <内容> 手工加一条；平时聊天答满次数也会自动整理。");
+        return reply(msg, "当前会话的记事本是空的。用 /ai 记住 <内容> 手工加一条；平时聊天答满次数也会自动整理。");
       }
       const lines = list.map((f, i) => `${i + 1}. ${f}`);
       return reply(msg, `当前会话记事本（共 ${list.length} 条）：\n${lines.join("\n")}`);
@@ -347,7 +347,7 @@ export function createHandler(deps) {
       const target = (rest[0] || "").trim();
       const removed = notebook.removeAt(chatId, Number(target));
       if (removed) return reply(msg, `已忘掉第 ${target} 条：${removed}`);
-      return reply(msg, "用法：@ai 忘掉 <序号>（序号看 @ai 记事本）");
+      return reply(msg, "用法：/ai 忘掉 <序号>（序号看 /ai 记事本）");
     }
 
     if (cmd === "清空记事本") {
@@ -371,7 +371,7 @@ export function createHandler(deps) {
 
     return reply(
       msg,
-      "未知命令。可用：帮助、状态、开启、关闭、账单、拉黑 <ID>、解封 <ID>、加管理员 <ID>、删管理员 <ID>、管理员列表、记住 <内容>、记事本、忘掉 <序号>、清空记事本、清空上下文、绑定列表（发 @ai 帮助 看全文说明）",
+      "未知命令。可用：帮助、状态、开启、关闭、账单、拉黑 <ID>、解封 <ID>、加管理员 <ID>、删管理员 <ID>、管理员列表、记住 <内容>、记事本、忘掉 <序号>、清空记事本、清空上下文、绑定列表（发 /ai 帮助 看全文说明）",
     );
   }
 
@@ -516,7 +516,7 @@ export function createHandler(deps) {
       const cn = extractCallName(text);
       if (cn) profiles.setCallName(senderId, cn);
 
-      // 号主命令：必须是创建者本人，且以 “@ai ” 或 “/ai ” 开头。
+      // 号主命令：必须是创建者本人，且以 “/ai ” 开头（@ai 只是聊天触发词，不算命令）。
       if (canRunOwnerCommand(senderId, permConfig())) {
         const body = parseOwnerCommand(text);
         if (body !== null) {
@@ -525,7 +525,7 @@ export function createHandler(deps) {
         }
       }
 
-      // 全局暂停门禁：创建者用 @ai 关闭 后，谁的提问都不回、不调模型（省 token）。
+      // 全局暂停门禁：创建者用 /ai 关闭 后，谁的提问都不回、不调模型（省 token）。
       // 号主命令在上面已经处理完并 return，能走到这里的都是普通消息；
       // shouldPauseBlock 对创建者本人放行，其余人一律静默忽略。
       if (shouldPauseBlock(state.isPaused(), senderId, permConfig())) {
@@ -582,8 +582,8 @@ export function createHandler(deps) {
 
       // 帮助拦截：被触发后提取出的问题恰好是「帮助」类写法时，直接回代码写死的
       // 公开版帮助，不发占位符、不调模型（不然模型会现编一份假能力清单）。
-      // 号主本人的 @ai 帮助 / /ai 帮助 已在上面的号主命令里处理（回的是更全的号主帮助），
-      // 走到这里的都是普通用户，或号主以普通提问方式问的帮助。
+      // 号主发 /ai 帮助 已在上面的号主命令里处理（回的是更全的号主帮助）；
+      // 号主发 /ai 帮助 走的是触发词聊天路径，问题恰好是「帮助」，命中的就是这里的公开帮助。
       if (isHelpQuery(parsed.question)) {
         await reply(msg, PUBLIC_HELP_TEXT);
         return;
