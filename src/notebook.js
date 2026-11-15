@@ -92,7 +92,22 @@ export class Notebook {
     this.selfNames = [...new Set([...extra.map((s) => String(s).trim()).filter(Boolean), ...DEFAULT_SELF_NAMES])];
     /** @type {Map<string, string[]>} chatId -> 事实列表 */
     this.chats = new Map();
+    /**
+     * @type {Map<string, number>} 每会话的版本号：任何实际变更（加/替换/删/清空）都 +1。
+     * 后台整理任务开始时记下版本、回写前比对，变了就丢弃本次结果——防整理拿着旧快照
+     * 把用户刚清空/修改的内容又恢复出来（审计 K062-12）。版本只存内存、不落盘。
+     */
+    this.versions = new Map();
     this._load();
+  }
+
+  /** 某会话记事本的当前版本号（从未变更过为 0）。 */
+  version(chatId) {
+    return this.versions.get(normChatId(chatId)) || 0;
+  }
+
+  _bumpVersion(id) {
+    this.versions.set(id, (this.versions.get(id) || 0) + 1);
   }
 
   _load() {
@@ -145,6 +160,7 @@ export class Notebook {
     const added = merged.filter((f) => !before.has(f)).length;
     if (merged.length !== cur.length || added > 0) {
       this.chats.set(id, merged);
+      this._bumpVersion(id);
       this._save();
     }
     return added;
@@ -161,6 +177,7 @@ export class Notebook {
     const clean = sanitizeFacts(lines, { max: this.maxPerChat, selfNames: this.selfNames });
     if (clean.length === 0) return false;
     this.chats.set(id, clean);
+    this._bumpVersion(id);
     this._save();
     return true;
   }
@@ -176,6 +193,7 @@ export class Notebook {
     if (!list || !Number.isInteger(n) || n < 1 || n > list.length) return null;
     const [removed] = list.splice(n - 1, 1);
     if (list.length === 0) this.chats.delete(id);
+    this._bumpVersion(id);
     this._save();
     return removed;
   }
@@ -186,6 +204,7 @@ export class Notebook {
     const list = this.chats.get(id);
     if (!list) return 0;
     this.chats.delete(id);
+    this._bumpVersion(id);
     this._save();
     return list.length;
   }
