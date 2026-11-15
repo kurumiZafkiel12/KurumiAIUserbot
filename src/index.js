@@ -74,8 +74,13 @@ async function main() {
   function reloadRuntime() {
     const fresh = loadConfig();
     const eff = { ...fresh, myUsername: username };
+    const oldPool = runtime.pool;
     runtime.config = eff;
     runtime.pool = new ProviderPool(eff.providers, logger);
+    // 继承旧池的今日用量与失败冷却：重载不能把每日额度清零（审计 K062-02，
+    // 否则普通用户在群里换个音色就能把额度刷回来）。usageStats 是另一套
+    // 落盘的 Token 统计，不在这里动。
+    runtime.pool.inheritStateFrom(oldPool);
     applyNameClock(eff);
     logger.info("配置已重载（提供方池已重建，改动立即生效）");
     return { config: runtime.config, pool: runtime.pool };
