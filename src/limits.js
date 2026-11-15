@@ -23,6 +23,8 @@ export class DailyCounter {
     this.limit = Number.isFinite(limit) && limit > 0 ? Math.floor(limit) : 0;
     this.day = todayKey();
     this.count = 0;
+    /** 已预留未结算的名额（选路时同步占位，防并发突破上限，审计 K062-04）。 */
+    this.reserved = 0;
   }
 
   /**
@@ -34,19 +36,20 @@ export class DailyCounter {
     if (key !== this.day) {
       this.day = key;
       this.count = 0;
+      this.reserved = 0;
       return true;
     }
     return false;
   }
 
   /**
-   * 今天是否还能再用一次。
+   * 今天是否还能再用一次（已用 + 在途预留 一起算）。
    * @param {Date} now
    */
   canUse(now = new Date()) {
     this.rolloverIfNeeded(now);
     if (this.limit <= 0) return true;
-    return this.count < this.limit;
+    return this.count + this.reserved < this.limit;
   }
 
   /**
@@ -57,6 +60,44 @@ export class DailyCounter {
     this.rolloverIfNeeded(now);
     this.count += 1;
     return this.count;
+  }
+
+  /**
+   * 同步预留一个名额：选路时调用，同一 tick 内立即生效，
+   * 并发请求再来选路时 canUse 会把在途预留算进去，杜绝 check-then-act 竞态。
+   * @returns {boolean} 预留成功（额度够）与否
+   */
+  reserve(now = new Date()) {
+    this.rolloverIfNeeded(now);
+    if (this.limit > 0 && this.count + this.reserved >= this.limit) return false;
+    this.reserved += 1;
+    return true;
+  }
+
+  /** 结算一次预留为正式用量（调用成功时）。没有在途预留时等同 record（兼容直接结算的调用方）。 */
+  commit(now = new Date()) {
+    this.rolloverIfNeeded(now);
+    if (this.reserved > 0) this.reserved -= 1;
+    this.count += 1;
+    return this.count;
+  }
+
+  /** 释放一次预留（调用失败时）：不计用量、不留痕。 */
+  release(now = new Date()) {
+    this.rolloverIfNeeded(now);
+    if (this.reserved > 0) this.reserved -= 1;
+  }
+
+  /**
+   * 从另一个计数器继承今日已用数（热重载重建提供方池时保留额度，审计 K062-02）。
+   * 只继承同一天的 count；在途预留不继承（在途请求会各自在旧条目上结算）。
+   */
+  inheritFrom(other, now = new Date()) {
+    if (!other) return;
+    this.rolloverIfNeeded(now);
+    if (other.day === this.day) {
+      this.count = other.count;
+    }
   }
 
   /**
