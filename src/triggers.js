@@ -50,20 +50,21 @@ export function parseTrigger(text, options = {}) {
     };
   }
 
-  // 2) 触发词：按独立词匹配（前后不能紧跟英文字母或数字，避免把邮箱之类误判）。
+  // 2) 触发词：只认消息开头（容忍前导空白），且后面不能紧跟英文字母或数字。
+  //    句中出现触发词不触发——否则机器人自己的提示文案（如「触发词 @aa 还没有
+  //    绑定模型」）会被另一个机器人当成触发，在群里无限互相回复（v0.6.0 实机事故）。
+  const lead = text.trimStart();
   for (const word of TRIGGER_WORDS) {
-    const idx = findWord(text, word);
-    if (idx >= 0) {
-      const question = (text.slice(0, idx) + " " + text.slice(idx + word.length))
-        .replace(/\s+/g, " ")
-        .trim();
-      return {
-        kind: "trigger",
-        trigger: word,
-        providerName: resolveProvider(word, triggerMap, defaultProvider),
-        question,
-      };
-    }
+    if (!lead.startsWith(word)) continue;
+    const after = lead.length > word.length ? lead[word.length] : "";
+    if (/[A-Za-z0-9]/.test(after)) continue;
+    const question = lead.slice(word.length).replace(/\s+/g, " ").trim();
+    return {
+      kind: "trigger",
+      trigger: word,
+      providerName: resolveProvider(word, triggerMap, defaultProvider),
+      question,
+    };
   }
 
   return null;
@@ -132,6 +133,11 @@ export function parseMentionOwnerCommand(text, username) {
   if (!trimmed.startsWith(mention)) return null;
   const rest = trimmed.slice(mention.length).trimStart();
   return parseOwnerCommand(rest);
+}
+
+/** 机器人自己发出的「未绑定」提示文案的开头特征：收到以此开头的消息一律忽略，防两个机器人互相触发死循环。 */
+export function isUnboundNoticeText(text) {
+  return typeof text === "string" && /^触发词\s+@[a-z]{2}\s+还没有绑定模型/.test(text.trimStart());
 }
 
 /** 帮助类问题（触发后提取出的问题恰好是这几个写法之一，就走代码写死的帮助，不调模型）。 */
