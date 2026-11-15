@@ -117,6 +117,23 @@ export function parseOwnerCommand(text) {
   return body.length > 0 ? body : null;
 }
 
+/**
+ * 群里「@机器人用户名 /ai 命令」的解析：消息不以 /ai 开头、而是以 @用户名 提及开头，
+ * 剥掉开头的提及（及随后的空格）后，余下文本若以 “/ai ” 开头，就按号主命令解析。
+ * 只供号主使用（调用方先验身份）：普通用户 @机器人发 /ai 帮助 仍走公开帮助，不会升成命令。
+ * @param {string} text 消息全文
+ * @param {string} username 机器人用户名（不带 @）
+ * @returns {string|null} 命令正文（去掉 “/ai ” 前缀）；不是这种形态返回 null
+ */
+export function parseMentionOwnerCommand(text, username) {
+  if (!text || typeof text !== "string" || !username) return null;
+  const mention = `@${username}`;
+  const trimmed = text.trimStart();
+  if (!trimmed.startsWith(mention)) return null;
+  const rest = trimmed.slice(mention.length).trimStart();
+  return parseOwnerCommand(rest);
+}
+
 /** 帮助类问题（触发后提取出的问题恰好是这几个写法之一，就走代码写死的帮助，不调模型）。 */
 const HELP_QUERIES = new Set(["帮助", "help", "/ai 帮助", "@ai 帮助"]);
 
