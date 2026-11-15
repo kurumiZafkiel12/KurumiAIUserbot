@@ -70,6 +70,35 @@ test("SlowdownTracker 冷却递增 5→10→30→60 并封顶", () => {
   assert.equal(t.recordAnswer("u1", t0 + 130 * 60_000), 60);
 });
 
+test("预留/结算/释放：预留同步占名额，失败释放不计用量，成功结算计一次（K062-04）", () => {
+  const c = new DailyCounter(1);
+  assert.equal(c.reserve(), true);
+  assert.equal(c.canUse(), false, "预留后名额被在途请求占住");
+  assert.equal(c.reserve(), false, "上限 1 时第二次预留必须失败");
+  c.release();
+  assert.equal(c.snapshot().count, 0, "释放不计用量");
+  assert.equal(c.reserve(), true, "释放后可再预留");
+  c.commit();
+  assert.equal(c.snapshot().count, 1, "结算计一次用量");
+  assert.equal(c.reserve(), false, "结算后额度已满");
+  assert.equal(c.canUse(), false);
+});
+
+test("inheritFrom：只继承同一天的已用计数，跨天不继承（K062-02）", () => {
+  const old = new DailyCounter(5);
+  old.record();
+  old.record();
+  const fresh = new DailyCounter(5);
+  fresh.inheritFrom(old);
+  assert.equal(fresh.snapshot().count, 2);
+  const stale = new DailyCounter(5);
+  stale.day = "2000-01-01";
+  stale.count = 9;
+  const fresh2 = new DailyCounter(5);
+  fresh2.inheritFrom(stale);
+  assert.equal(fresh2.snapshot().count, 0, "昨天的计数不能带到今天");
+});
+
 test("SlowdownTracker 各用户独立，reset 清零", () => {
   const t = new SlowdownTracker();
   const t0 = 5_000_000;
