@@ -100,3 +100,51 @@ test("chat 已吐字后断流不重试（防重复发内容）", async () => {
   await assert.rejects(() => pool.chat(entry, [{ role: "user", content: "hi" }], null, null), /connection reset/);
   assert.equal(calls, 1);
 });
+
+test("生图提供方不进聊天池挑选，但能被 firstImageProvider 找到", () => {
+  const pool = new ProviderPool(
+    [
+      { name: "chat", baseURL: "https://a.example/v1", model: "m-chat", weight: 1 },
+      { name: "img", baseURL: "https://i.example/v1", model: "m-img", weight: 100, image: true },
+    ],
+    silentLogger,
+  );
+  assert.deepEqual(pool.available().map((e) => e.name), ["chat"]);
+  assert.equal(pool.pick(new Set(), "img").name, "chat"); // preferred 指向生图也被跳过
+  assert.equal(pool.enabledCount(), 1); // 生图不算聊天提供方
+  assert.deepEqual(pool.chatEntries().map((e) => e.name), ["chat"]);
+  assert.equal(pool.firstImageProvider().name, "img");
+  assert.equal(pool.getByName("img").image, true);
+});
+
+test("visionChat 用指定模型发非流式带图请求并回传 usage", async () => {
+  const pool = makePool();
+  const entry = pool.getByName("a");
+  let seenParams = null;
+  entry.client = {
+    chat: {
+      completions: {
+        create: async (params) => {
+          seenParams = params;
+          return {
+            choices: [{ message: { content: "图里是一只猫" } }],
+            usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 },
+          };
+        },
+      },
+    },
+  };
+  let usage = null;
+  const text = await pool.visionChat(
+    entry,
+    "vision-model",
+    [{ role: "user", content: [{ type: "text", text: "这是什么" }, { type: "image_url", image_url: { url: "data:image/jpeg;base64,AA" } }] }],
+    (u) => {
+      usage = u;
+    },
+  );
+  assert.equal(text, "图里是一只猫");
+  assert.equal(seenParams.model, "vision-model");
+  assert.equal(seenParams.stream, false);
+  assert.equal(usage.total_tokens, 15);
+});
