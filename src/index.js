@@ -13,6 +13,7 @@ import { Notebook } from "./notebook.js";
 import { UserProfiles } from "./profiles.js";
 import { RuntimeState } from "./state.js";
 import { UsageStats } from "./usagestats.js";
+import { GroupRecords } from "./records.js";
 import { createHandler } from "./handlers.js";
 import { startNameClock } from "./nameclock.js";
 
@@ -46,6 +47,23 @@ async function main() {
   }
   const effectiveConfig = { ...config, myUsername: username };
 
+  // 名字时钟：号主用 /ai 改名 设了 customName 时用它打头替代 NAME_PREFIX。
+  // 配置重载时要重启时钟（新名字立即生效），所以做成可反复调用的 applyNameClock。
+  let stopClock = null;
+  function applyNameClock(cfg) {
+    if (stopClock) {
+      stopClock();
+      stopClock = null;
+    }
+    if (!cfg.nameClock) return;
+    stopClock = startNameClock(client, {
+      firstName: (cfg.customName && cfg.customName.first) || cfg.namePrefix,
+      lastName: (cfg.customName && cfg.customName.last) || "",
+      timezone: cfg.timezone,
+      logger,
+    });
+  }
+
   // 可重载运行时：config 与 pool 放在可替换的盒子里。号主命令改完 config.json 后
   // 调 reloadRuntime()，这里重新 loadConfig 并重建提供方池，handlers 换上新引用，
   // 改动立即生效不用重启（记事本后台整理等用 pool 的地方走的也是 handlers 内的引用）。
@@ -58,6 +76,7 @@ async function main() {
     const eff = { ...fresh, myUsername: username };
     runtime.config = eff;
     runtime.pool = new ProviderPool(eff.providers, logger);
+    applyNameClock(eff);
     logger.info("配置已重载（提供方池已重建，改动立即生效）");
     return { config: runtime.config, pool: runtime.pool };
   }
@@ -75,6 +94,8 @@ async function main() {
   }
   // Token 用量统计落盘在 usage.json：按天按模型累计，跨天归零。
   const usageStats = new UsageStats(path.resolve("usage.json"));
+  // 群聊天记录落盘在 records.json：开启记录的群的消息按群环形保存。
+  const records = new GroupRecords(path.resolve("records.json"));
   const handler = createHandler({
     client,
     config: runtime.config,
@@ -87,6 +108,7 @@ async function main() {
     profiles,
     state,
     usageStats,
+    records,
     logger,
     startedAt: Date.now(),
     selfId: String(me.id),
@@ -98,14 +120,7 @@ async function main() {
   // NewMessage 构建器会把这类更新统一转成标准 Message，私聊和群聊才能走同一套逻辑。
   client.addEventHandler(handler, new NewMessage({}));
 
-  let stopClock = null;
-  if (effectiveConfig.nameClock) {
-    stopClock = startNameClock(client, {
-      prefix: effectiveConfig.namePrefix,
-      timezone: effectiveConfig.timezone,
-      logger,
-    });
-  }
+  applyNameClock(effectiveConfig);
 
   let shuttingDown = false;
   async function shutdown(signal) {
