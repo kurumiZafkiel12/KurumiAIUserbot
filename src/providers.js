@@ -19,7 +19,12 @@ export class ProviderPool {
     this.entries = [];
     for (const def of defs || []) {
       if (!def || !def.name || !def.baseURL || !def.model) {
-        logger.warn(`跳过配置不完整的提供方：${JSON.stringify(def)}`);
+        // 只打安全字段（名字/地址/缺失字段名）：def 里带 apiKey，整体序列化会把 key 写进日志，
+        // 日志文件又能被 /ai 日志 导出，等于凭证外泄（审计 K062-05）。
+        const missing = ["name", "baseURL", "model"].filter((f) => !def || !def[f]);
+        logger.warn(
+          `跳过配置不完整的提供方：name=${(def && def.name) || "(未填)"}，baseURL=${(def && def.baseURL) || "(未填)"}，缺少字段：${missing.join("/") || "未知"}`,
+        );
         continue;
       }
       const keyProp = "api" + "Key";
@@ -78,11 +83,14 @@ export class ProviderPool {
   }
 
   /**
-   * 加权挑选一个提供方。
+   * 加权挑选一个提供方。挑中即同步预留一个每日名额（见 DailyCounter.reserve），
+   * 并发请求在同一 tick 后再选路时就看得到占用，杜绝突破每日上限（审计 K062-04）。
+   * 调用方必须用 markSuccess/markFailure 结算这次预留。
    * @param {Set<string>} exclude 已尝试过、本轮排除的名字
    * @param {string|null} preferred 优先尝试的名字（默认提供方）；不可用时回退到加权挑选
    */
   pick(exclude = new Set(), preferred = null, now = Date.now()) {
+    let chosen = null;
     if (preferred) {
       const p = this.getByName(preferred);
       if (
@@ -93,31 +101,72 @@ export class ProviderPool {
         p.cooldownUntil <= now &&
         p.counter.canUse(new Date(now))
       ) {
-        return p;
+        chosen = p;
       }
     }
-    const candidates = this.available(exclude, now);
-    if (candidates.length === 0) return null;
-    const total = candidates.reduce((sum, e) => sum + e.weight, 0);
-    let r = Math.random() * total;
-    for (const e of candidates) {
-      r -= e.weight;
-      if (r <= 0) return e;
+    if (!chosen) {
+      const candidates = this.available(exclude, now);
+      if (candidates.length === 0) return null;
+      const total = candidates.reduce((sum, e) => sum + e.weight, 0);
+      let r = Math.random() * total;
+      chosen = candidates[candidates.length - 1];
+      for (const e of candidates) {
+        r -= e.weight;
+        if (r <= 0) {
+          chosen = e;
+          break;
+        }
+      }
     }
-    return candidates[candidates.length - 1];
+    // 同步预留：canUse 刚验过，正常必成功；万一失败（如并发已占满）按无可用处理。
+    if (!chosen.counter.reserve(new Date(now))) return null;
+    return chosen;
   }
 
-  /** 记一次成功调用（计入每日用量）。 */
+  /**
+   * 为不用 pick 的选路（识图按池挑条目、生图取第一个）预留一个名额：
+   * 同时检查禁用、失败冷却与每日限额（在途预留也算），与聊天同一套闸门（审计 K062-03）。
+   * @returns {boolean} 是否预留成功；成功后须用 markSuccess/markFailure/release 结算
+   */
+  reserve(entry, now = Date.now()) {
+    if (!entry || entry.disabled) return false;
+    if (entry.cooldownUntil > now) return false;
+    return entry.counter.reserve(new Date(now));
+  }
+
+  /** 释放一次预留（不计用量、不进冷却）：生图失败等不走 markFailure 的路径用。 */
+  release(entry) {
+    if (entry) entry.counter.release();
+  }
+
+  /** 结算一次成功调用：把预留转成正式每日用量。 */
   markSuccess(entry) {
-    entry.counter.record();
+    entry.counter.commit();
     entry.lastError = "";
   }
 
-  /** 记一次失败：进入冷却期，并把错误留给日志/报告。 */
+  /** 记一次失败：释放预留（失败不计用量），进入冷却期，并把错误留给日志/报告。 */
   markFailure(entry, err) {
+    entry.counter.release();
     entry.cooldownUntil = Date.now() + FAILURE_COOLDOWN_MS;
     entry.lastError = err && err.message ? err.message : String(err);
     this.logger.warn(`提供方 ${entry.name} 调用失败，进入 ${FAILURE_COOLDOWN_MS / 1000}s 冷却：${entry.lastError}`);
+  }
+
+  /**
+   * 从旧池继承运行状态（热重载重建池时用，审计 K062-02）：
+   * 按提供方名把今日已用计数与未到期的失败冷却继承过来，新池的额度不被清零。
+   * 限额本身以新配置为准（DailyCounter.inheritFrom 只搬 count）。
+   */
+  inheritStateFrom(oldPool) {
+    if (!oldPool || !Array.isArray(oldPool.entries)) return;
+    for (const entry of this.entries) {
+      const old = oldPool.entries.find((e) => e.name === entry.name);
+      if (!old) continue;
+      entry.counter.inheritFrom(old.counter);
+      if (old.cooldownUntil > entry.cooldownUntil) entry.cooldownUntil = old.cooldownUntil;
+      if (old.lastError) entry.lastError = old.lastError;
+    }
   }
 
   /**
