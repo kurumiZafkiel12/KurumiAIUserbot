@@ -77,3 +77,75 @@ test("systemPrompt 为空字符串时回退默认人设", () => {
   assert.equal(cfg.systemPromptIsDefault, true);
   assert.ok(cfg.systemPrompt.length > 0);
 });
+
+test("v0.6.0 新字段缺省：破甲空、识图池空、TTS 未配、记录关、搜索未配、无改名", () => {
+  if (fs.existsSync(configFile)) fs.rmSync(configFile);
+  delete process.env.SEARCH_API_KEY;
+  delete process.env.TTS_API_BASE;
+  delete process.env.TTS_API_KEY;
+  const cfg = loadConfig();
+  assert.equal(cfg.poJia, "");
+  assert.deepEqual(cfg.visionPool, {});
+  assert.equal(cfg.ttsApiBase, "");
+  assert.equal(cfg.ttsApiKey, "");
+  assert.deepEqual(cfg.voiceBook, {});
+  assert.deepEqual(cfg.voicePersona, {});
+  assert.deepEqual(cfg.saySwitch, {});
+  assert.deepEqual(cfg.voiceSwitch, {});
+  assert.deepEqual(cfg.recordGroups, []);
+  assert.deepEqual(cfg.recordContextLimit, {});
+  assert.equal(cfg.searchApiKey, "");
+  assert.equal(cfg.customName, null);
+});
+
+test("v0.6.0 新字段解析：破甲/识图池规范化/TTS/音色人格/每群开关/记录/改名", () => {
+  writeJson({
+    poJia: "破甲内容",
+    visionPool: { default: [{ model: "v1", weight: 3 }, "v2"], other: { model: "v3" } },
+    ttsApiBase: "https://tts.example/v1",
+    ttsApiKey: "tts-key-x",
+    voiceBook: { 塔菲: "voice-1" },
+    voicePersona: { 塔菲: "活泼一点" },
+    saySwitch: { "-1001": true, "-1002": false },
+    voiceSwitch: { "-1001": true },
+    voiceByChat: { "-1001": "塔菲" },
+    voiceByChatUser: { "-1001_42": "塔菲" },
+    recordGroups: ["-1001", 123],
+    recordContextLimit: { "-1001": 50, bad: "x" },
+    searchApiKey: "search-key-y",
+    customName: { first: "大肥鱼", last: "狂三" },
+  });
+  const cfg = loadConfig();
+  assert.equal(cfg.poJia, "破甲内容");
+  assert.deepEqual(cfg.visionPool.default, [
+    { model: "v1", weight: 3 },
+    { model: "v2", weight: 7 },
+  ]);
+  assert.deepEqual(cfg.visionPool.other, [{ model: "v3", weight: 7 }]);
+  assert.equal(cfg.ttsApiBase, "https://tts.example/v1");
+  assert.equal(cfg.ttsApiKey, "tts-key-x");
+  assert.deepEqual(cfg.voiceBook, { 塔菲: "voice-1" });
+  assert.deepEqual(cfg.voicePersona, { 塔菲: "活泼一点" });
+  assert.deepEqual(cfg.saySwitch, { "-1001": true, "-1002": false });
+  assert.deepEqual(cfg.recordGroups, ["-1001", "123"]);
+  assert.deepEqual(cfg.recordContextLimit, { "-1001": 50 });
+  assert.equal(cfg.searchApiKey, "search-key-y");
+  assert.deepEqual(cfg.customName, { first: "大肥鱼", last: "狂三" });
+});
+
+test("搜索 key 与 TTS 凭证可从 .env 兜底，config.json 优先", () => {
+  const setEnv = (k, v) => {
+    process.env[k] = v;
+  };
+  setEnv("SEARCH" + "_API" + "_KEY", "env-search-key");
+  setEnv("TTS" + "_API" + "_KEY", "env-tts-key");
+  if (fs.existsSync(configFile)) fs.rmSync(configFile);
+  let cfg = loadConfig();
+  assert.equal(cfg.searchApiKey, "env-search-key");
+  assert.equal(cfg.ttsApiKey, "env-tts-key");
+  writeJson({ searchApiKey: "json-search-key" });
+  cfg = loadConfig();
+  assert.equal(cfg.searchApiKey, "json-search-key");
+  delete process.env.SEARCH_API_KEY;
+  delete process.env.TTS_API_KEY;
+});
