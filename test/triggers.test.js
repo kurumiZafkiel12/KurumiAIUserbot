@@ -2,7 +2,14 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
-import { parseTrigger, parseOwnerCommand, resolveProvider, isReplyToSelf, isHelpQuery } from "../src/triggers.js";
+import {
+  parseTrigger,
+  parseOwnerCommand,
+  parseMentionOwnerCommand,
+  resolveProvider,
+  isReplyToSelf,
+  isHelpQuery,
+} from "../src/triggers.js";
 
 const OPTS = { username: "mybot", triggerMap: { "@ab": "relay-a" } };
 
@@ -164,4 +171,19 @@ test("用户名触发关闭时，号主与管理员的 @用户名 照常触发",
 test("用户名触发开启（默认）时普通用户 @用户名 触发", () => {
   const r = parseTrigger("@mybot 你好", { username: "mybot", triggerMap: {}, role: "user" });
   assert.equal(r.kind, "mention");
+});
+
+test("parseMentionOwnerCommand：群里 @机器人 后接 /ai 命令能解析出命令正文", () => {
+  assert.equal(parseMentionOwnerCommand("@mybot /ai 状态", "mybot"), "状态");
+  assert.equal(parseMentionOwnerCommand("@mybot  /ai 帮助", "mybot"), "帮助");
+  assert.equal(parseMentionOwnerCommand("  @mybot /ai 拉黑 123", "mybot"), "拉黑 123");
+});
+
+test("parseMentionOwnerCommand：不是命令形态一律返回 null", () => {
+  assert.equal(parseMentionOwnerCommand("@mybot 你好", "mybot"), null); // 普通提问
+  assert.equal(parseMentionOwnerCommand("@mybot @ai 状态", "mybot"), null); // @ai 不是命令前缀
+  assert.equal(parseMentionOwnerCommand("/ai 状态", "mybot"), null); // 直接以 /ai 开头走 parseOwnerCommand
+  assert.equal(parseMentionOwnerCommand("喂 @mybot /ai 状态", "mybot"), null); // 提及不在开头
+  assert.equal(parseMentionOwnerCommand("@other /ai 状态", "mybot"), null); // 提及的不是机器人
+  assert.equal(parseMentionOwnerCommand("@mybot /ai 状态", ""), null); // 没配用户名
 });
