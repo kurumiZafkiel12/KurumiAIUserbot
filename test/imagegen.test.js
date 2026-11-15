@@ -13,6 +13,50 @@ test("isImageGenRequest 命中生图说法，不命中普通问题", () => {
   assert.equal(isImageGenRequest("今天吃什么"), false);
 });
 
+test("isImageGenRequest 真生图说法保持命中（K062-16 正例）", () => {
+  const yes = [
+    "画一张 一只猫",
+    "帮我画个 戴帽子的柴犬",
+    "帮我生成一张壁纸",
+    "做个头像",
+    "设计一张海报",
+    "来一张 猫的图片",
+    "给我画幅山水",
+    "画只猫",
+    "能画一只猫吗",
+    "生成一张图",
+    "帮我做图",
+    "画一张图",
+    "生成一幅山水画",
+  ];
+  for (const q of yes) assert.equal(isImageGenRequest(q), true, `应命中：${q}`);
+});
+
+test("isImageGenRequest 动词后没有图像名词时不误触发（K062-16 反例）", () => {
+  const no = [
+    "请生成一个 Python 函数",
+    "请设计一个登录页面",
+    "来一个笑话",
+    "生成一张表格",
+    "生成一段代码",
+    "生成一个函数",
+    "做个自我介绍",
+    "来一首歌",
+    "这幅画是谁画的",
+    "今天吃什么",
+  ];
+  for (const q of no) assert.equal(isImageGenRequest(q), false, `不应命中：${q}`);
+});
+
+test("extractImagePrompt 新判定下剥离结果正确（K062-16）", () => {
+  assert.equal(extractImagePrompt("帮我生成一张壁纸"), "");
+  assert.equal(extractImagePrompt("做个头像"), "");
+  assert.equal(extractImagePrompt("来一张 猫的图片"), "猫的图片");
+  assert.equal(extractImagePrompt("给我画幅山水"), "山水");
+  assert.equal(extractImagePrompt("能画一只猫吗"), "猫");
+  assert.equal(extractImagePrompt("生成一幅山水画"), "山水画");
+});
+
 test("extractImagePrompt 剥掉触发词留下画面描述", () => {
   assert.equal(extractImagePrompt("画一张 一只猫"), "一只猫");
   assert.equal(extractImagePrompt("帮我画个 戴帽子的柴犬"), "戴帽子的柴犬");
