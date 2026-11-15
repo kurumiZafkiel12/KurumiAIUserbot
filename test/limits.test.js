@@ -2,7 +2,7 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
-import { DailyCounter, todayKey } from "../src/limits.js";
+import { DailyCounter, todayKey, SlowdownTracker } from "../src/limits.js";
 
 test("todayKey 格式为 YYYY-MM-DD", () => {
   assert.equal(todayKey(new Date(2026, 0, 5)), "2026-01-05");
@@ -55,4 +55,27 @@ test("构造函数把非法上限归为不限量", () => {
   assert.equal(new DailyCounter(-5).limit, 0);
   assert.equal(new DailyCounter("abc").limit, 0);
   assert.equal(new DailyCounter(7).limit, 7);
+});
+
+test("SlowdownTracker 冷却递增 5→10→30→60 并封顶", () => {
+  const t = new SlowdownTracker();
+  const t0 = 1_000_000_000;
+  assert.equal(t.isBlocked("u1", t0), false);
+  assert.equal(t.recordAnswer("u1", t0), 5);
+  assert.equal(t.isBlocked("u1", t0 + 4 * 60_000), true);
+  assert.equal(t.isBlocked("u1", t0 + 5 * 60_000 + 1), false);
+  assert.equal(t.recordAnswer("u1", t0 + 6 * 60_000), 10);
+  assert.equal(t.recordAnswer("u1", t0 + 20 * 60_000), 30);
+  assert.equal(t.recordAnswer("u1", t0 + 60 * 60_000), 60);
+  assert.equal(t.recordAnswer("u1", t0 + 130 * 60_000), 60);
+});
+
+test("SlowdownTracker 各用户独立，reset 清零", () => {
+  const t = new SlowdownTracker();
+  const t0 = 5_000_000;
+  t.recordAnswer("u1", t0);
+  assert.equal(t.isBlocked("u2", t0), false);
+  t.reset("u1");
+  assert.equal(t.isBlocked("u1", t0), false);
+  assert.equal(t.recordAnswer("u1", t0), 5); // reset 后从第一档重新开始
 });
