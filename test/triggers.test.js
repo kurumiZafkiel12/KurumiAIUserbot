@@ -4,6 +4,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   parseTrigger,
+  isUnboundNoticeText,
   parseOwnerCommand,
   parseMentionOwnerCommand,
   resolveProvider,
@@ -186,4 +187,23 @@ test("parseMentionOwnerCommand：不是命令形态一律返回 null", () => {
   assert.equal(parseMentionOwnerCommand("喂 @mybot /ai 状态", "mybot"), null); // 提及不在开头
   assert.equal(parseMentionOwnerCommand("@other /ai 状态", "mybot"), null); // 提及的不是机器人
   assert.equal(parseMentionOwnerCommand("@mybot /ai 状态", ""), null); // 没配用户名
+});
+
+test("触发词只认消息开头：句中出现不触发（防提示文案自触发死循环）", () => {
+  assert.equal(parseTrigger("请问 @aa 在吗", OPTS), null);
+  assert.equal(parseTrigger("触发词 @aa 还没有绑定模型，请联系号主绑定（/ai 绑定）。", OPTS), null);
+  assert.equal(parseTrigger("在吗 @ai 帮我看看", OPTS), null);
+  const r = parseTrigger("@aa 在吗", OPTS);
+  assert.equal(r.kind, "trigger");
+  assert.equal(r.trigger, "@aa");
+  const r2 = parseTrigger("  @ab 你好", OPTS);
+  assert.equal(r2.trigger, "@ab");
+});
+
+test("isUnboundNoticeText 识别未绑定提示文案", () => {
+  assert.equal(isUnboundNoticeText("触发词 @aa 还没有绑定模型，请联系号主绑定（/ai 绑定）。"), true);
+  assert.equal(isUnboundNoticeText("触发词 @az 还没有绑定模型"), true);
+  assert.equal(isUnboundNoticeText("触发词是什么"), false);
+  assert.equal(isUnboundNoticeText(""), false);
+  assert.equal(isUnboundNoticeText(null), false);
 });
