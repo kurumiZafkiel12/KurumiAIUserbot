@@ -242,6 +242,26 @@ const lastAskAt = new Map();
 const codeWarnCounts = new Map();
 /** @type {string[]} 机器人最近经 reply() 发出的文案（回声免疫：同文再被送达就忽略） */
 const recentSentTexts = [];
+/**
+ * @type {Map<string, number>} 敏感文本 pending 过期后的「墓碑」：key=chatId:senderId，value=到期时间戳。
+ * 墓碑期内该用户的下一条非命令消息会被吞掉（不写群记录、不发给模型），
+ * 防迟到的 key/凭证被当普通聊天处理（审计 K062-01）。
+ */
+const sensitiveTombstones = new Map();
+const TOMBSTONE_TTL_MS = 10 * 60 * 1000;
+const TOMBSTONE_NOTICE = "上一步已超时，这条消息已忽略，不会发给模型、也不会被记录。请重新发命令。";
+
+/** 这条 pending 是不是在等「敏感自由文本」（新 key、音色 ID、人格提示词、识图模型名等整条填入的内容）。 */
+function isSensitiveTextPending(entry) {
+if (!entry) return false;
+return (
+(entry.kind === "换key" && entry.step === 2) ||
+(entry.kind === "换搜索key" && entry.step === 2) ||
+(entry.kind === "加识图" && entry.step === 2) ||
+entry.kind === "加音色" ||
+(entry.kind === "加人格" && entry.step === 2)
+);
+}
 
 // 权限判断用的配置视图：管理员名单以运行时 Set 为准（命令增删后立刻生效，不必重启）。
 function permConfig() {
@@ -450,6 +470,8 @@ consolidating.add(key);
 try {
 const history = store.get(chatId, senderId);
 if (history.length === 0) return;
+// 整理开始时的记事本版本：回写前若版本变了（期间被清空/增删），丢弃本次结果（审计 K062-12）。
+const startVersion = notebook.version(chatId);
 const convo = history
 .map((m) => (m.role === "user"? m.content: `机器人：${m.content}`))
 .join("\n");
@@ -471,7 +493,11 @@ content:
 ]);
 if (out && out.trim()!== "（空）") {
 const lines = out.split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
-if (notebook.replace(chatId, lines)) {
+if (notebook.version(chatId) !== startVersion) {
+// 整理期间记事本被改动（典型：号主刚执行了 /ai 清空记事本）：本次结果基于旧快照，
+// 回写会把用户刚清掉的内容恢复出来——直接丢弃，下一轮整理会基于最新状态重做（审计 K062-12）。
+logger.info(`整理期间记事本有新变更，本次整理结果已丢弃（chat=${chatId}）`);
+} else if (notebook.replace(chatId, lines)) {
 logger.info(`记事本已自动整理（chat=${chatId}，现有 ${notebook.facts(chatId).length} 条）`);
 }
 }
@@ -818,15 +844,28 @@ return out;
       if (!fs.existsSync(file)) {
         return reply(msg, "今天还没有日志。");
       }
+      // 导出前统一脱敏（审计 K062-05）：一律发脱敏副本、发完即删，不动原始日志文件；
+      // 这样即使日志里混进了 key 样式字符串（上游报错回显等），也不会原样带出去。
+      let raw = "";
       try {
-        await client.sendFile(msg.peerId, { file, forceDocument: true, replyTo: msg.id });
+        raw = fs.readFileSync(file, "utf-8");
+      } catch (readErr) {
+        return reply(msg, `日志读取失败：${readErr.message}`);
+      }
+      const redacted = scrubSecrets(raw, collectSecrets(config));
+      const tmp = path.join(os.tmpdir(), `bot-log-${day}-redacted.log`);
+      try {
+        fs.writeFileSync(tmp, redacted, "utf-8");
+        await client.sendFile(msg.peerId, { file: tmp, forceDocument: true, replyTo: msg.id });
       } catch (err) {
         logger.error(`发送日志文件失败，改发文本：${err.message}`);
+        const lines = redacted.trimEnd().split("\n").slice(-15).join("\n");
+        return reply(msg, `日志文件没发出去，改发最近 15 行：\n${lines}`);
+      } finally {
         try {
-          const lines = fs.readFileSync(file, "utf-8").trimEnd().split("\n").slice(-15).join("\n");
-          return reply(msg, `日志文件没发出去，改发最近 15 行：\n${lines}`);
-        } catch (readErr) {
-          return reply(msg, `日志读取失败：${readErr.message}`);
+          fs.unlinkSync(tmp);
+        } catch {
+          // 临时副本删不掉不影响主流程。
         }
       }
       return;
@@ -1348,6 +1387,25 @@ return out;
     return reply(msg, "未知命令。发 /ai 帮助 看全部命令（都是代码写死的固定说明，不走模型）。");
   }
 
+  /** Telegram 对「内容没变」的编辑会回 MESSAGE_NOT_MODIFIED 错误：这不是失败。 */
+  function isNotModifiedError(err) {
+    const text = `${(err && err.message) || ""} ${(err && err.errorMessage) || ""}`;
+    return text.includes("MESSAGE_NOT_MODIFIED");
+  }
+
+  /**
+   * 编辑占位消息：目标内容与现状相同时 Telegram 会报错，但语义上已经是目标状态，
+   * 必须吞掉这个错误——否则 sendAnswer 会在第一处编辑就中断，超长答案的尾段续发
+   * 与人设分条的后续条会整段丢失（审计 K062-08）。其它错误照常抛出。
+   */
+  async function editPlaceholderText(peerId, messageId, text) {
+    try {
+      await client.editMessage(peerId, { message: messageId, text });
+    } catch (err) {
+      if (!isNotModifiedError(err)) throw err;
+    }
+  }
+
   /**
    * 把最终答案发出去：先编辑占位消息。人设模式下闲聊短答按 decideSplit 分条——
    * 占位消息编辑为第一条，其余逐条补发（带小延迟模拟打字）；专业长答与无人设时整条发，
@@ -1356,10 +1414,7 @@ return out;
   async function sendAnswer(msg, placeholder, answer) {
     const parts = decideSplit(answer, { personaMode: isPersonaMode() });
     if (parts.length <= 1) {
-      await client.editMessage(msg.peerId, {
-        message: placeholder.id,
-        text: answer.slice(0, TG_MESSAGE_LIMIT),
-      });
+      await editPlaceholderText(msg.peerId, placeholder.id, answer.slice(0, TG_MESSAGE_LIMIT));
       let restText = answer.slice(TG_MESSAGE_LIMIT);
       while (restText.length > 0) {
         const chunk = restText.slice(0, TG_MESSAGE_LIMIT);
@@ -1368,10 +1423,7 @@ return out;
       }
       return;
     }
-    await client.editMessage(msg.peerId, {
-      message: placeholder.id,
-      text: parts[0].slice(0, TG_MESSAGE_LIMIT),
-    });
+    await editPlaceholderText(msg.peerId, placeholder.id, parts[0].slice(0, TG_MESSAGE_LIMIT));
     for (let i = 1; i < parts.length; i++) {
       const delay =
         deps.splitDelayMs !== undefined && deps.splitDelayMs !== null
@@ -1508,13 +1560,23 @@ return out;
     ];
 
     const tried = new Set();
+    /** @type {Set<string>} 预留失败（限额已满/失败冷却中）的 API 名：本轮整体跳过 */
+    const blockedApis = new Set();
     let answer = null;
     while (!answer) {
-      const candidates = items.filter((it) => !tried.has(`${it.apiName}::${it.model}`));
+      const candidates = items.filter(
+        (it) => !tried.has(`${it.apiName}::${it.model}`) && !blockedApis.has(it.apiName),
+      );
       if (candidates.length === 0) break;
       const pick = pickVisionEntry(candidates);
-      tried.add(`${pick.apiName}::${pick.model}`);
       const entry = pool.getByName(pick.apiName);
+      // 与聊天同一套闸门：先预留每日名额（同时查限额与失败冷却），预留成功才真正调用，
+      // 成功用 markSuccess 结算、失败用 markFailure 释放并进冷却（审计 K062-03）。
+      if (!pool.reserve(entry)) {
+        blockedApis.add(pick.apiName);
+        continue;
+      }
+      tried.add(`${pick.apiName}::${pick.model}`);
       try {
         let seenUsage = null;
         const text = await pool.visionChat(entry, pick.model, messages, (u) => {
@@ -1562,10 +1624,27 @@ return out;
     }
     if (isCoolingDown(senderId)) return;
 
-    const placeholder = await sendPlaceholder(msg, chatId);
-    if (!placeholder) return;
+    // 与聊天/识图同一套闸门：先预留每日名额（限额/失败冷却），成功结算、失败释放（审计 K062-03/04）。
+    if (!pool.reserve(provider)) {
+      await reply(msg, "生图模型暂时不可用（已达每日上限或冷却中），请稍后再试。");
+      return;
+    }
 
+    const placeholder = await sendPlaceholder(msg, chatId);
+    if (!placeholder) {
+      pool.release(provider);
+      return;
+    }
+
+    let reservationHeld = true;
+    const releaseReservation = () => {
+      if (reservationHeld) {
+        reservationHeld = false;
+        pool.release(provider);
+      }
+    };
     const fail = async (text) => {
+      releaseReservation();
       try {
         await client.editMessage(msg.peerId, { message: placeholder.id, text });
       } catch (err) {
@@ -1615,6 +1694,7 @@ return out;
         // 占位删不掉就留着，不影响图片本身。
       }
       pool.markSuccess(provider);
+      reservationHeld = false;
       usageStats.record(provider.model, null);
       afterAnswer(chatId, senderId, speakerName, parsed.question, "（已按要求生成图片）");
     } catch (err) {
@@ -1678,6 +1758,29 @@ return out;
     let usedEntry = null;
     let lastEditAt = 0;
 
+    // 流式编辑代次管理（审计 K062-09）：流式阶段的部分文本 edit 是异步落定的，
+    // 可能在最终答案发出之后才真正落地、把占位消息覆盖回旧的部分文本。
+    // 每次发起 edit 记一个代次；收尾时关通道并记下最终占位文本与最终代次，
+    // 迟到的旧 edit 一旦落定（settle 时发现自己代次已过时），立刻补发一次最终文本纠正回来。
+    // 注意不能在发最终答案前死等在途 edit 落定：网络层可能长时间挂起，会把回答卡死。
+    let editGen = 0;
+    let streamClosed = false;
+    let finalGen = 0;
+    let finalPlaceholderText = null;
+    const trackStreamingEdit = (text) => {
+      const gen = ++editGen;
+      client
+        .editMessage(msg.peerId, { message: placeholder.id, text })
+        .catch(() => {})
+        .then(() => {
+          if (streamClosed && gen < finalGen && finalPlaceholderText !== null) {
+            return client
+              .editMessage(msg.peerId, { message: placeholder.id, text: finalPlaceholderText })
+              .catch(() => {});
+          }
+        });
+    };
+
     const secrets = collectSecrets(config);
     while (!answer) {
       const entry = pool.pick(tried, preferred);
@@ -1695,9 +1798,7 @@ return out;
               lastEditAt = t;
               // 流式编辑也先脱敏：部分文本里可能已出现完整 key，不能原样发出去。
               const shown = scrubSecrets(partial, secrets);
-              client
-                .editMessage(msg.peerId, { message: placeholder.id, text: shown.slice(0, TG_MESSAGE_LIMIT) })
-                .catch(() => {});
+              trackStreamingEdit(shown.slice(0, TG_MESSAGE_LIMIT));
             }
           },
           (u) => {
@@ -1715,11 +1816,12 @@ return out;
     }
 
     if (!answer) {
+      // 同样收尾：迟到的流式 edit 落定后要纠正回这句失败提示，而不是停在部分文本上。
+      streamClosed = true;
+      finalGen = ++editGen;
+      finalPlaceholderText = "抱歉，所有模型都暂时不可用，请稍后再试。";
       try {
-        await client.editMessage(msg.peerId, {
-          message: placeholder.id,
-          text: "抱歉，所有模型都暂时不可用，请稍后再试。",
-        });
+        await editPlaceholderText(msg.peerId, placeholder.id, finalPlaceholderText);
       } catch (err) {
         logger.error(`发送失败提示出错：${err.message}`);
       }
@@ -1729,6 +1831,15 @@ return out;
     // 出口脱敏：最终回复与存入上下文的文本都先过滤（配置 key 逐字打码 + sk- 长串打码），
     // 防止模型把 key 样式的字符串编进回复里吓人。
     const clean = scrubSecrets(answer, secrets);
+
+    // 流式收尾：关通道并记下最终占位文本（与 sendAnswer 的分条判定保持一致），
+    // 供 trackStreamingEdit 的代次纠正使用（审计 K062-09）。
+    streamClosed = true;
+    finalGen = ++editGen;
+    {
+      const finalParts = decideSplit(clean, { personaMode: isPersonaMode() });
+      finalPlaceholderText = (finalParts.length <= 1 ? clean : finalParts[0]).slice(0, TG_MESSAGE_LIMIT);
+    }
 
     // 保存上下文（问题 + 脱敏后的回答），下次提问能接上话。
     afterAnswer(chatId, senderId, speakerName, parsed.question, clean);
@@ -1844,28 +1955,36 @@ return out;
         const body = parseOwnerCommand(text) ?? parseMentionOwnerCommand(text, config.myUsername);
         if (body !== null) {
           pending.clear(chatId, senderId);
+          sensitiveTombstones.delete(`${chatId}:${senderId}`);
           await handleOwnerCommand(msg, chatId, senderId, body);
           return;
         }
+        const tbKey = `${chatId}:${senderId}`;
         const pk = pending.peek(chatId, senderId);
         if (pk) {
           const trimmed = text.trim();
           // 这一步等全文的 pending（换key/换搜索key 的第二步、加识图第二步、
           // 加音色的两步、加人格第二步）：非命令文本整条就是要填的内容。
-          const expectsText =
-            !pk.expired &&
-            ((pk.entry.kind === "换key" && pk.entry.step === 2) ||
-              (pk.entry.kind === "换搜索key" && pk.entry.step === 2) ||
-              (pk.entry.kind === "加识图" && pk.entry.step === 2) ||
-              pk.entry.kind === "加音色" ||
-              (pk.entry.kind === "加人格" && pk.entry.step === 2));
+          const expectsText = !pk.expired && isSensitiveTextPending(pk.entry);
           if (pk.expired) {
             pending.clear(chatId, senderId);
             if (/^\d+$/.test(trimmed)) {
               await reply(msg, "已超时，请重新发命令。");
               return;
             }
-            // 过期且不是数字：已清掉，按普通消息继续往下走。
+            if (isSensitiveTextPending(pk.entry)) {
+              // 敏感文本 pending 过期：这条消息极可能就是迟到的 key/凭证，绝不能回落成
+              // 普通聊天（私聊会被发给模型，群聊会被写进记录再进别人的系统上下文）。
+              // 当场吞掉（在写群记录之前 return），并留 10 分钟墓碑：防凭证被拆成
+              // 两条发，第二条也吞掉（审计 K062-01）。
+              sensitiveTombstones.set(tbKey, Date.now() + TOMBSTONE_TTL_MS);
+              logger.info(
+                `敏感待办已过期，迟到消息已忽略（chat=${chatId} user=${senderId} kind=${pk.entry.kind} step=${pk.entry.step}）`,
+              );
+              await reply(msg, TOMBSTONE_NOTICE);
+              return;
+            }
+            // 过期且不是数字、也不是敏感文本待办：已清掉，按普通消息继续往下走。
           } else if (expectsText) {
             pending.consume(chatId, senderId);
             await executePending(msg, chatId, senderId, pk.entry, trimmed);
@@ -1884,6 +2003,19 @@ return out;
             return;
           }
           // 其余情况（等数字时发了别的内容）：不清 pending，按普通消息继续往下走。
+        } else {
+          // 没有进行中的 pending 时才查墓碑（有新 pending 说明流程已重启，命令路径也会清墓碑）：
+          // 墓碑期内吞掉该用户的下一条非命令消息并清墓碑——只记日志、回固定提示，
+          // 绝不写群记录、绝不发给模型（审计 K062-01）。
+          const tbUntil = sensitiveTombstones.get(tbKey);
+          if (tbUntil !== undefined) {
+            sensitiveTombstones.delete(tbKey);
+            if (Date.now() <= tbUntil) {
+              logger.info(`墓碑期内，消息已忽略（chat=${chatId} user=${senderId}）`);
+              await reply(msg, TOMBSTONE_NOTICE);
+              return;
+            }
+          }
         }
       }
 
