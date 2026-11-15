@@ -2,7 +2,7 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
-import { parseTrigger, parseOwnerCommand, resolveProvider, isReplyToSelf } from "../src/triggers.js";
+import { parseTrigger, parseOwnerCommand, resolveProvider, isReplyToSelf, isHelpQuery } from "../src/triggers.js";
 
 const OPTS = { username: "mybot", triggerMap: { "@ab": "relay-a" } };
 
@@ -68,6 +68,41 @@ test("号主命令解析", () => {
   assert.equal(parseOwnerCommand("@ai"), null);
   assert.equal(parseOwnerCommand("状态"), null);
   assert.equal(parseOwnerCommand("@ab 状态"), null);
+});
+
+test("号主命令双前缀：/ai 也认", () => {
+  assert.equal(parseOwnerCommand("/ai 状态"), "状态");
+  assert.equal(parseOwnerCommand("/ai 帮助"), "帮助");
+  assert.equal(parseOwnerCommand("/ai 拉黑 12345"), "拉黑 12345");
+  assert.equal(parseOwnerCommand("/ai"), null);
+  assert.equal(parseOwnerCommand("/ai "), null);
+  assert.equal(parseOwnerCommand("/ab 状态"), null);
+  assert.equal(parseOwnerCommand(" /ai 状态"), null);
+  assert.equal(parseOwnerCommand("/ai状态"), null);
+  assert.equal(parseOwnerCommand("你好"), null);
+  assert.equal(parseOwnerCommand(""), null);
+  assert.equal(parseOwnerCommand(null), null);
+});
+
+test("帮助类问题判定：恰好是帮助写法才算", () => {
+  assert.equal(isHelpQuery("帮助"), true);
+  assert.equal(isHelpQuery(" 帮助 "), true);
+  assert.equal(isHelpQuery("help"), true);
+  assert.equal(isHelpQuery("Help"), true);
+  assert.equal(isHelpQuery("HELP"), true);
+  assert.equal(isHelpQuery("/ai 帮助"), true);
+  assert.equal(isHelpQuery("@ai 帮助"), true);
+  assert.equal(isHelpQuery(" /ai  帮助 "), true);
+});
+
+test("帮助类问题判定：近似但不恰好是的不算", () => {
+  assert.equal(isHelpQuery("帮助我"), false);
+  assert.equal(isHelpQuery("请给我帮助"), false);
+  assert.equal(isHelpQuery("帮助中心在哪里"), false);
+  assert.equal(isHelpQuery("help me"), false);
+  assert.equal(isHelpQuery(""), false);
+  assert.equal(isHelpQuery(null), false);
+  assert.equal(isHelpQuery(undefined), false);
 });
 
 test("回复续聊判定：out 为 true 算回复自己", () => {
