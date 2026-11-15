@@ -161,6 +161,7 @@ export function loadConfig() {
     triggerMap,
     blacklist: Array.isArray(json.blacklist) ? json.blacklist.map(String) : [],
     adminIds: normalizeAdminIds(json.adminIds),
+    ignoreSenderIds: normalizeAdminIds(json.ignoreSenderIds),
     // 私聊门禁："all"（默认）人人可私聊；"admins" 只有创建者+管理员可私聊，群聊不受影响。
     privateChat: json.privateChat === "admins" ? "admins" : "all",
 
