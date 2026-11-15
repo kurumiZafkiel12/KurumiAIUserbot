@@ -1,4 +1,4 @@
-// 配置加载：.env（必填项） + config.json（可选，多模型/触发词绑定/限额等）。
+// 配置加载：.env（必填项） + config.json（可选，多模型/限额等）。
 // config.json 的字段详解见 docs/CONFIG.md。
 
 import fs from "node:fs";
@@ -136,9 +136,6 @@ export function loadConfig() {
     else if (ov.disabled === false) p.disabled = false;
   }
 
-  const triggerMap =
-    json.triggerMap && typeof json.triggerMap === "object" ? { ...json.triggerMap } : {};
-
   const hasCustomPrompt = typeof json.systemPrompt === "string" && json.systemPrompt.trim() !== "";
 
   return {
@@ -158,7 +155,6 @@ export function loadConfig() {
       Number.isFinite(json.cooldownSeconds) && json.cooldownSeconds >= 0 ? Number(json.cooldownSeconds) : 5,
 
     providers,
-    triggerMap,
     blacklist: Array.isArray(json.blacklist) ? json.blacklist.map(String) : [],
     adminIds: normalizeAdminIds(json.adminIds),
     ignoreSenderIds: normalizeAdminIds(json.ignoreSenderIds),
@@ -166,7 +162,7 @@ export function loadConfig() {
     privateChat: json.privateChat === "admins" ? "admins" : "all",
 
     // ---- v0.5.0 起的字段 ----
-    // 用户名触发开关：false 时普通用户的 @用户名 提及不触发（触发词/回复/私聊不受影响）。
+    // 用户名触发开关：false 时普通用户的 @用户名 提及不触发（回复/私聊不受影响）。
     usernameTrigger: json.usernameTrigger !== false,
     // 限速名单（用户数字 ID）：被限速者答后进入递增冷却。
     slowdownUsers: stringArray(json.slowdownUsers),
@@ -175,7 +171,7 @@ export function loadConfig() {
     // 屏蔽群（群 ID）与屏蔽词：屏蔽群内问题命中屏蔽词 → 静默不回。词对所有屏蔽群生效。
     sensitiveGroups: stringArray(json.sensitiveGroups),
     sensitiveKeywords: stringArray(json.sensitiveKeywords),
-    // 默认提供方（/ai 换模型 设）：未显式绑定的触发词解析优先用它，空 = 用名为 default 的。
+    // 默认提供方（/ai 换模型 设）：提问都用它，空 = 用名为 default 的。
     defaultProvider: typeof json.defaultProvider === "string" ? json.defaultProvider.trim() : "",
     // 以下三项是「原始值」回显，供号主命令在现有值基础上改写后整体落盘：
     customProviders,
