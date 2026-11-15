@@ -74,6 +74,23 @@ export function resolveProvider(trigger, triggerMap = {}) {
 }
 
 /**
+ * 这条消息回复的是不是机器人本账号自己发出的消息（回复续聊的判定）。
+ * 满足任一条件即算：被回复消息 out 为 true（本账号发出），
+ * 或被回复消息的 senderId 等于本账号 ID。
+ *
+ * @param {object|null} replied 被回复的消息对象（GramJS Message 或同形对象）
+ * @param {string|number} selfId 本账号的数字 ID
+ * @returns {boolean}
+ */
+export function isReplyToSelf(replied, selfId) {
+  if (!replied || selfId === undefined || selfId === null || String(selfId) === "") return false;
+  if (replied.out === true) return true;
+  if (replied.senderId === undefined || replied.senderId === null) return false;
+  const sid = String(replied.senderId);
+  return sid !== "" && sid === String(selfId);
+}
+
+/**
  * 判断文本是不是号主命令：以 “@ai ” 开头（号主身份由调用方另行校验）。
  * 返回去掉前缀后的命令正文；不是命令则返回 null。
  */
