@@ -39,6 +39,7 @@
     "default": 500
   },
   "adminIds": ["123456789"],
+- `ignoreSenderIds`：忽略名单（用户 ID 数组）。名单内账号的消息一律不处理；典型用途：同一个群里还有另一个机器人号时，互加对方 ID，两个号永不互相触发。只写本地 config.json。
   "privateChat": "all",
   "blacklist": [],
   "usernameTrigger": true,
