@@ -52,10 +52,10 @@ async function main() {
     botNames: [effectiveConfig.namePrefix, username],
   });
   const profiles = new UserProfiles(path.resolve("profiles.json"));
-  // 运行时状态（全局暂停开关）落盘在 state.json：重启后保持关闭，直到创建者发 @ai 开启。
+  // 运行时状态（全局暂停开关）落盘在 state.json：重启后保持关闭，直到创建者发 /ai 开启。
   const state = new RuntimeState(path.resolve("state.json"));
   if (state.isPaused()) {
-    logger.warn("当前处于全局关闭状态（state.json 记录了 paused），只响应号主命令；发 @ai 开启 恢复回复。");
+    logger.warn("当前处于全局关闭状态（state.json 记录了 paused），只响应号主命令；发 /ai 开启 恢复回复。");
   }
   const handler = createHandler({
     client,
