@@ -75,3 +75,45 @@ export class DailyCounter {
     return { day: this.day, count: this.count, limit: this.limit };
   }
 }
+
+/** 限速递增阶梯（分钟）：每被成功回答一次，冷却按这个表往上走，封顶最后一档。 */
+export const SLOWDOWN_STAGES_MINUTES = [5, 10, 30, 60];
+
+/**
+ * 递增限速跟踪：名单管理在 handlers/config 那边，这里只管「冷却到什么时候」。
+ * 语义：被限速的用户每次被成功回答后，进入一段冷却；冷却时长按
+ * 5 → 10 → 30 → 60 分钟递增，封顶 60。冷却内再问的一律由调用方静默忽略。
+ * 纯内存（重启后冷却清零，名单本身落盘在 config 里，不受影响）。
+ */
+export class SlowdownTracker {
+  constructor() {
+    /** @type {Map<string, {stage: number, blockedUntil: number}>} */
+    this.users = new Map();
+  }
+
+  /** 这个用户现在是不是还在冷却里。 */
+  isBlocked(userId, now = Date.now()) {
+    const rec = this.users.get(String(userId));
+    if (!rec) return false;
+    return rec.blockedUntil > now;
+  }
+
+  /**
+   * 记一次成功回答：进入下一档冷却。
+   * @returns {number} 本次冷却的分钟数
+   */
+  recordAnswer(userId, now = Date.now()) {
+    const id = String(userId);
+    const rec = this.users.get(id) || { stage: 0, blockedUntil: 0 };
+    const minutes = SLOWDOWN_STAGES_MINUTES[Math.min(rec.stage, SLOWDOWN_STAGES_MINUTES.length - 1)];
+    rec.blockedUntil = now + minutes * 60_000;
+    rec.stage = Math.min(rec.stage + 1, SLOWDOWN_STAGES_MINUTES.length - 1);
+    this.users.set(id, rec);
+    return minutes;
+  }
+
+  /** 清掉某个用户的冷却与档位（解除限速时用）。 */
+  reset(userId) {
+    this.users.delete(String(userId));
+  }
+}
