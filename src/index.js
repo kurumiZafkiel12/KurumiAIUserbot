@@ -67,6 +67,7 @@ async function main() {
     state,
     logger,
     startedAt: Date.now(),
+    selfId: String(me.id),
   });
 
   // 关键点：必须用 NewMessage 规范事件注册处理函数，不能直接裸挂 addEventHandler 回调。
