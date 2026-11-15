@@ -148,3 +148,69 @@ test("visionChat 用指定模型发非流式带图请求并回传 usage", async 
   assert.equal(seenParams.stream, false);
   assert.equal(usage.total_tokens, 15);
 });
+
+test("pick 同步预留名额：上限 1 时第二次 pick 返回 null，失败回滚后可再 pick（K062-04）", () => {
+  const pool = new ProviderPool(
+    [{ name: "a", baseURL: "https://a.example/v1", model: "m-a", apiKey: "k", dailyLimit: 1 }],
+    silentLogger,
+  );
+  const first = pool.pick();
+  assert.ok(first);
+  assert.equal(pool.pick(), null, "名额已被在途预留占住，并发不能再放行");
+  pool.markFailure(first, new Error("boom"));
+  assert.equal(first.counter.snapshot().count, 0, "失败不计用量");
+  assert.equal(pool.pick(), null, "失败后进冷却，冷却内不可挑中（现有失败逻辑不变）");
+  first.cooldownUntil = 0; // 模拟冷却到期
+  const again = pool.pick();
+  assert.ok(again, "预留已回滚，冷却到期后可重新挑中");
+  pool.markSuccess(again);
+  assert.equal(again.counter.snapshot().count, 1);
+  assert.equal(pool.pick(), null, "结算后额度用满");
+});
+
+test("inheritStateFrom：按名继承今日用量与未到期的失败冷却（K062-02）", () => {
+  const mk = () =>
+    new ProviderPool(
+      [{ name: "a", baseURL: "https://a.example/v1", model: "m-a", apiKey: "k", dailyLimit: 5 }],
+      silentLogger,
+    );
+  const old = mk();
+  const e = old.pick();
+  old.markSuccess(e);
+  e.cooldownUntil = Date.now() + 60_000;
+  const fresh = mk();
+  fresh.inheritStateFrom(old);
+  assert.equal(fresh.entries[0].counter.snapshot().count, 1, "今日已用必须继承");
+  assert.ok(fresh.entries[0].cooldownUntil > Date.now(), "未到期冷却必须继承");
+});
+
+test("reserve：预留占满或冷却中返回 false（K062-03）", () => {
+  const pool = new ProviderPool(
+    [{ name: "a", baseURL: "https://a.example/v1", model: "m-a", apiKey: "k", dailyLimit: 1 }],
+    silentLogger,
+  );
+  const e = pool.entries[0];
+  assert.equal(pool.reserve(e), true);
+  assert.equal(pool.reserve(e), false, "预留占满后不可再预留");
+  pool.release(e);
+  e.cooldownUntil = Date.now() + 60_000;
+  assert.equal(pool.reserve(e), false, "冷却中不可预留");
+});
+
+test("配置不完整的提供方被跳过时，日志只打安全字段、绝不带 apiKey（K062-05）", () => {
+  const warns = [];
+  const logger = { info() {}, warn: (m) => warns.push(String(m)), error() {} };
+  const fakeKey = "FAKE-KEY-SHOULD-NEVER-BE-LOGGED";
+  const pool = new ProviderPool(
+    [
+      { name: "bad", baseURL: "https://bad.example/v1", apiKey: fakeKey }, // 缺 model
+      { name: "ok", baseURL: "https://ok.example/v1", model: "m-ok", apiKey: "whatever" },
+    ],
+    logger,
+  );
+  assert.deepEqual(pool.entries.map((e) => e.name), ["ok"]);
+  assert.equal(warns.length, 1);
+  assert.ok(!warns[0].includes(fakeKey), "日志里不能出现 apiKey 明文");
+  assert.ok(warns[0].includes("bad"), "日志应包含提供方名字");
+  assert.ok(warns[0].includes("model"), "日志应指明缺失字段名");
+});
