@@ -107,3 +107,23 @@ test("Notebook 持久化：写盘后新实例能读回；文件损坏不崩", ()
   assert.deepEqual(nb3.facts("42"), ["坏文件之后照样能记"]);
   fs.rmSync(dir, { recursive: true, force: true });
 });
+
+test("版本号：只有实际变更才 +1，清空不存在的记事本不算变更（K062-12）", () => {
+  const nb = new Notebook(null);
+  assert.equal(nb.version("c1"), 0);
+  nb.addFacts("c1", ["甲：喜欢猫"]);
+  assert.equal(nb.version("c1"), 1);
+  nb.addFacts("c1", ["甲：喜欢猫"]); // 无新增、无变更
+  assert.equal(nb.version("c1"), 1, "没有实际变更时版本不动");
+  assert.equal(nb.replace("c1", []), false); // 空结果不覆盖
+  assert.equal(nb.version("c1"), 1);
+  nb.replace("c1", ["甲：喜欢猫", "乙：喜欢狗"]);
+  assert.equal(nb.version("c1"), 2);
+  nb.removeAt("c1", 2);
+  assert.equal(nb.version("c1"), 3);
+  assert.equal(nb.clear("c1"), 1);
+  assert.equal(nb.version("c1"), 4);
+  assert.equal(nb.clear("c1"), 0); // 已经是空的
+  assert.equal(nb.version("c1"), 4, "清空空记事本不算变更");
+  assert.equal(nb.version("别的会话"), 0, "版本按会话独立");
+});
