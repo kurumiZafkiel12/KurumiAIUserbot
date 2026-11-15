@@ -35,7 +35,7 @@
     "default": 500
   },
   "adminIds": ["123456789"],
-- `ignoreSenderIds`：忽略名单（用户 ID 数组）。名单内账号的消息一律不处理；典型用途：同一个群里还有另一个机器人号时，互加对方 ID，两个号永不互相触发。只写本地 config.json。
+  "ignoreSenderIds": [],
   "privateChat": "all",
   "blacklist": [],
   "usernameTrigger": true,
@@ -100,6 +100,10 @@
 ### adminIds（数组，可选，默认空，程序也会维护）
 
 管理员的用户数字 ID 列表（字符串数组）。管理员是创建者之下的一档：不能跑号主命令，但 `privateChat` 设为 `"admins"` 时可以私聊机器人。创建者用 `/ai 加管理员 <ID>` / `/ai 删管理员 <ID>` / `/ai 管理员列表` 命令增删时程序会自动读写这个字段，立即生效；手工编辑则改完重启生效。创建者本人（`.env` 的 `OWNER_ID`）不需要、也不应该写进这个名单。
+
+### ignoreSenderIds（数组，可选，默认空）
+
+忽略名单（用户 ID 数组）。名单内账号的消息一律不处理；典型用途：同一个群里还有另一个机器人号时，互加对方 ID，两个号永不互相触发。只写本地 config.json。
 
 ### privateChat（字符串，可选，默认 `"all"`）
 
