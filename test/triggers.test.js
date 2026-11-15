@@ -2,7 +2,7 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
-import { parseTrigger, parseOwnerCommand, resolveProvider } from "../src/triggers.js";
+import { parseTrigger, parseOwnerCommand, resolveProvider, isReplyToSelf } from "../src/triggers.js";
 
 const OPTS = { username: "mybot", triggerMap: { "@ab": "relay-a" } };
 
@@ -68,6 +68,27 @@ test("号主命令解析", () => {
   assert.equal(parseOwnerCommand("@ai"), null);
   assert.equal(parseOwnerCommand("状态"), null);
   assert.equal(parseOwnerCommand("@ab 状态"), null);
+});
+
+test("回复续聊判定：out 为 true 算回复自己", () => {
+  assert.equal(isReplyToSelf({ out: true, senderId: 123 }, "999"), true);
+  assert.equal(isReplyToSelf({ out: true }, "999"), true);
+});
+
+test("回复续聊判定：senderId 等于本账号 ID 算回复自己", () => {
+  assert.equal(isReplyToSelf({ out: false, senderId: 999 }, "999"), true);
+  assert.equal(isReplyToSelf({ out: false, senderId: "999" }, 999), true);
+  // GramJS 的 senderId 是大整数对象，toString 后应能对上
+  assert.equal(isReplyToSelf({ out: false, senderId: 999n }, "999"), true);
+});
+
+test("回复续聊判定：回复别人、空消息、没配 selfId 都不算", () => {
+  assert.equal(isReplyToSelf({ out: false, senderId: 123 }, "999"), false);
+  assert.equal(isReplyToSelf({ out: false }, "999"), false);
+  assert.equal(isReplyToSelf(null, "999"), false);
+  assert.equal(isReplyToSelf(undefined, "999"), false);
+  assert.equal(isReplyToSelf({ out: true, senderId: 999 }, ""), false);
+  assert.equal(isReplyToSelf({ out: false, senderId: 999 }, null), false);
 });
 
 test("resolveProvider 回退规则", () => {
