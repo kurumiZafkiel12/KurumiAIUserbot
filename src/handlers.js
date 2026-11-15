@@ -70,8 +70,7 @@ export const OWNER_HELP_TEXT = `可用命令：
 /ai 状态
 /ai 服务器
 /ai 日志
-/ai 用量报告
-/ai 账单（查看今日用量、Token 与余额；「用量」是它的别名）
+/ai 账单（查看今日用量、Token 与余额；「用量」「用量报告」是它的别名）
 
 【用户名】
 /ai 开启用户名
@@ -845,17 +844,7 @@ return out;
       return reply(msg, "已开启：恢复正常回复。");
     }
 
-    if (cmd === "账单" || cmd === "用量") {
-      const bal = await balanceReport(pool.entries);
-      const snap = usageStats.snapshot();
-      await reply(
-        msg,
-        `今日账单：\n${pool.usageReport()}\nToken（今日）：输入 ${snap.totals.prompt} / 输出 ${snap.totals.completion} / 合计 ${snap.totals.total}\n\nAPI 余额：\n${bal}`,
-      );
-      return;
-    }
-
-    if (cmd === "用量报告") {
+    if (cmd === "账单" || cmd === "用量" || cmd === "用量报告") {
       const snap = usageStats.snapshot();
       const tokenLines = Object.entries(snap.models).map(
         ([m, r]) => `- ${m}：调用 ${r.calls} 次，Token 输入 ${r.prompt} / 输出 ${r.completion} / 合计 ${r.total}`,
@@ -864,7 +853,7 @@ return out;
       await reply(
         msg,
         [
-          `用量报告（${snap.day}）：`,
+          `账单（${snap.day}）：`,
           "",
           "各提供方今日用量：",
           pool.usageReport(),
