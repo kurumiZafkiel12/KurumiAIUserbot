@@ -90,22 +90,19 @@ export function isReplyToSelf(replied, selfId) {
   return sid !== "" && sid === String(selfId);
 }
 
-/** 号主命令的两种前缀：触发词式 “@ai ” 与 tgai 时代习惯的 “/ai ”，都认。 */
-export const OWNER_COMMAND_PREFIXES = [`${DEFAULT_TRIGGER} `, "/ai "];
+/** 号主命令前缀：只认 “/ai ”（用户定版规矩）。“@ai” 只是聊天触发词，绝不当命令前缀。 */
+export const OWNER_COMMAND_PREFIX = "/ai ";
 
 /**
- * 判断文本是不是号主命令：以 “@ai ” 或 “/ai ” 开头（号主身份由调用方另行校验）。
+ * 判断文本是不是号主命令：以 “/ai ” 开头（号主身份由调用方另行校验）。
  * 返回去掉前缀后的命令正文；不是命令则返回 null。
+ * 注意：“@ai …” 是触发词聊天，不是命令，这里一律返回 null。
  */
 export function parseOwnerCommand(text) {
   if (!text || typeof text !== "string") return null;
-  for (const prefix of OWNER_COMMAND_PREFIXES) {
-    if (text.startsWith(prefix)) {
-      const body = text.slice(prefix.length).trim();
-      return body.length > 0 ? body : null;
-    }
-  }
-  return null;
+  if (!text.startsWith(OWNER_COMMAND_PREFIX)) return null;
+  const body = text.slice(OWNER_COMMAND_PREFIX.length).trim();
+  return body.length > 0 ? body : null;
 }
 
 /** 帮助类问题（触发后提取出的问题恰好是这几个写法之一，就走代码写死的帮助，不调模型）。 */
