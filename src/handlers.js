@@ -1,4 +1,4 @@
-// 消息处理：路由触发词与号主命令，跑流式问答并把结果编辑回占位消息。
+// 消息处理：路由触发与号主命令，跑流式问答并把结果编辑回占位消息。
 // 整个处理函数包在 try/catch 里：任何异常都记日志，绝不静默吞掉。
 
 import fs from "node:fs";
@@ -9,12 +9,8 @@ import {
 parseTrigger,
 parseOwnerCommand,
 parseMentionOwnerCommand,
-resolveProvider,
 isReplyToSelf,
 isHelpQuery,
-isUnboundNoticeText,
-TRIGGER_WORDS,
-DEFAULT_TRIGGER,
 } from "./triggers.js";
 import { formatNowLine} from "./time.js";
 import { saveConfigJson} from "./config.js";
@@ -63,7 +59,7 @@ export const PLACEHOLDER_TEXT = "（思考中...）";
 
 /**
 * 号主帮助：代码写死的固定文本（不走模型），内容与 handleOwnerCommand 的真实分支逐条对齐。
-* 号主命令只认 /ai 前缀（如「/ai 状态」）；@ai 只是聊天触发词，不是命令前缀。
+* 号主命令只认 /ai 前缀（如「/ai 状态」），其他任何写法都不当命令。
 */
 export const OWNER_HELP_TEXT = `可用命令：
 
@@ -79,7 +75,7 @@ export const OWNER_HELP_TEXT = `可用命令：
 
 【用户名】
 /ai 开启用户名
-/ai 关闭用户名（关后普通用户 @用户名 无法触发；触发词、回复续聊、私聊不受影响）
+/ai 关闭用户名（关后普通用户 @用户名 无法触发；回复续聊、私聊不受影响）
 
 【管理员】
 /ai 加管理员 <用户ID>
@@ -159,13 +155,6 @@ export const OWNER_HELP_TEXT = `可用命令：
 /ai 称呼 <用户ID> <称呼>
 /ai 印象 <用户ID>
 
-【触发绑定】
-/ai 绑定（再回 <序号> 选触发词，再回 <序号> 选 API）
-/ai 绑定 <触发词> <API名字>（一行式，老用法）
-/ai 解绑（再回 <序号>）
-/ai 解绑 <触发词>（一行式）
-/ai 查看绑定（别名 绑定列表）
-
 【机器人改名】
 /ai 改名 <名字> <姓氏>（姓氏可空；别名 设置名称；开了名字时钟时显示为「姓氏 时:分」）
 
@@ -174,7 +163,7 @@ export const OWNER_HELP_TEXT = `可用命令：
 /ai 开启（恢复）
 /ai 清空上下文
 
-触发词：默认 @用户名 提及或回复续聊；绑定过的触发词（如 @aa）可指定接口。
+触发方式：群里 @用户名 提及、或回复我发出的消息；私聊直接发。
 私聊：默认只放行主人与管理员（config.privateChat）。`;
 
 /**
@@ -252,8 +241,6 @@ const sensitiveKeywordsSet = new Set(config.sensitiveKeywords || []);
 const lastAskAt = new Map();
 /** @type {Map<string, number>} 代码关键词命中计数（内存版，累计到 CODE_WARN_LIMIT 拉黑） */
 const codeWarnCounts = new Map();
-/** @type {Map<string, number>} 未绑定提示上次发送时间（按 chat+触发词计，10 分钟冷却，防刷屏与互相触发） */
-const unboundNoticeAt = new Map();
 /** @type {string[]} 机器人最近经 reply() 发出的文案（回声免疫：同文再被送达就忽略） */
 const recentSentTexts = [];
 
@@ -552,7 +539,7 @@ msg,
 );
 }
 
-/** 发起一个带自定义编号列表的 pending（识图/音色/人格/绑定/搜索 key 等）。 */
+/** 发起一个带自定义编号列表的 pending（识图/音色/人格/搜索 key 等）。 */
 async function startListPending(msg, chatId, senderId, entry, header, lines) {
 pending.set(chatId, senderId, entry);
 await reply(msg, `${header}\n${lines.join("\n")}`);
@@ -702,36 +689,6 @@ return out;
       return reply(msg, "搜索 key 已更新，立即生效，联网搜索已启用。（key 不会回显）");
     }
 
-    // ---- 触发绑定（交互版）：选触发词 -> 选 API ----
-    if (entry.kind === "绑定交互") {
-      if (entry.step === 1) {
-        const word = pickFrom(entry.list);
-        if (!word) return reply(msg, "编号超出范围，请重新发 /ai 绑定。");
-        const names = pool.chatEntries().map((e) => e.name);
-        if (names.length === 0) return reply(msg, "现在没有可绑定的聊天 API。");
-        pending.set(chatId, senderId, { kind: "绑定交互", step: 2, triggerWord: word, apiList: names });
-        return reply(
-          msg,
-          `已选触发词 ${word}。绑到哪个 API？（60 秒内单独回一个数字）\n${names.map((n, i) => `${i + 1}. ${n}`).join("\n")}`,
-        );
-      }
-      const name = pickFrom(entry.apiList);
-      if (!name) return reply(msg, "编号超出范围，请重新发 /ai 绑定。");
-      const map = { ...config.triggerMap, [entry.triggerWord]: name };
-      if (!saveAndReload({ triggerMap: map })) return reply(msg, "保存失败，请看日志。");
-      return reply(msg, `已绑定：${entry.triggerWord} → ${name}，已生效。`);
-    }
-
-    // ---- 触发绑定（交互版）：解绑选触发词 ----
-    if (entry.kind === "解绑交互") {
-      const word = pickFrom(entry.list);
-      if (!word) return reply(msg, "编号超出范围，请重新发 /ai 解绑。");
-      const map = { ...config.triggerMap };
-      delete map[word];
-      if (!saveAndReload({ triggerMap: map })) return reply(msg, "保存失败，请看日志。");
-      return reply(msg, `已解绑 ${word}，已生效。`);
-    }
-
     // 第二步：限额（text 是纯数字，调用方已校验）
     if (entry.step === 2 && entry.kind === "限额") {
       const n = Number.parseInt(text, 10);
@@ -763,7 +720,7 @@ return out;
       if (!saveAndReload({ defaultProvider: target.name })) return reply(msg, "保存失败，请看日志。");
       return reply(
         msg,
-        `默认提供方已切换为「${target.name}」（模型 ${target.model}），已生效。未显式绑定的触发词、@ 提及都会优先用它。`,
+        `默认提供方已切换为「${target.name}」（模型 ${target.model}），已生效。之后的提问都会优先用它。`,
       );
     }
 
@@ -924,7 +881,7 @@ return out;
     }
 
     if (cmd === "模型") {
-      const name = resolveProvider(DEFAULT_TRIGGER, config.triggerMap, config.defaultProvider);
+      const name = config.defaultProvider || "default";
       const entry = name ? pool.getByName(name) : null;
       return reply(msg, entry ? `当前默认提供方：${entry.name}（模型 ${entry.model}）` : `当前默认提供方：${name || "default"}`);
     }
@@ -938,7 +895,7 @@ return out;
       if (!saveAndReload({ usernameTrigger: false })) return reply(msg, "保存失败，请看日志。");
       return reply(
         msg,
-        "已关闭用户名触发：普通用户 @机器人用户名 不再触发（触发词、回复续聊、私聊不受影响；你和管理员 @用户名 照常能触发），已生效。",
+        "已关闭用户名触发：普通用户 @机器人用户名 不再触发（回复续聊、私聊不受影响；你和管理员 @用户名 照常能触发），已生效。",
       );
     }
 
@@ -1319,56 +1276,6 @@ return out;
       return reply(msg, "破甲已清除，立即生效。");
     }
 
-    // ---- 触发绑定 ----
-    if (cmd === "绑定") {
-      if (rest.length === 0) {
-        const words = TRIGGER_WORDS.filter((w) => w !== DEFAULT_TRIGGER);
-        return startListPending(
-          msg,
-          chatId,
-          senderId,
-          { kind: "绑定交互", step: 1, list: words },
-          "绑定哪个触发词？（60 秒内单独回一个数字）",
-          words.map((w, i) => `${i + 1}. ${w}${config.triggerMap[w] ? ` → ${config.triggerMap[w]}` : ""}`),
-        );
-      }
-      const word = unwrapArg((rest[0] || "").trim());
-      const pname = unwrapArg((rest[1] || "").trim());
-      if (!word || !pname) return reply(msg, "用法：/ai 绑定 <触发词> <API名字>");
-      if (!TRIGGER_WORDS.includes(word)) return reply(msg, `触发词只能是 @aa ~ @az 之一，你发的是「${word}」。`);
-      if (!pool.getByName(pname)) return reply(msg, `没有叫「${pname}」的提供方。先发 /ai 查看api 看名字。`);
-      const map = { ...config.triggerMap, [word]: pname };
-      if (!saveAndReload({ triggerMap: map })) return reply(msg, "保存失败，请看日志。");
-      return reply(msg, `已绑定：${word} → ${pname}，已生效。`);
-    }
-
-    if (cmd === "解绑") {
-      if (rest.length === 0) {
-        const bound = Object.keys(config.triggerMap || {}).filter((w) => w !== DEFAULT_TRIGGER && config.triggerMap[w]);
-        if (bound.length === 0) return reply(msg, "没有可解绑的触发词。");
-        return startListPending(
-          msg,
-          chatId,
-          senderId,
-          { kind: "解绑交互", step: 1, list: bound },
-          "解绑哪个触发词？（60 秒内单独回一个数字）",
-          bound.map((w, i) => `${i + 1}. ${w} → ${config.triggerMap[w]}`),
-        );
-      }
-      const word = unwrapArg((rest[0] || "").trim());
-      if (!word) return reply(msg, "用法：/ai 解绑 <触发词>");
-      if (!TRIGGER_WORDS.includes(word)) return reply(msg, `触发词只能是 @aa ~ @az 之一，你发的是「${word}」。`);
-      const map = { ...config.triggerMap };
-      if (!(word in map)) return reply(msg, `${word} 本来就没有绑定。`);
-      delete map[word];
-      if (!saveAndReload({ triggerMap: map })) return reply(msg, "保存失败，请看日志。");
-      const note =
-        word === DEFAULT_TRIGGER
-          ? `已解绑 ${word}，它会回退到默认提供方（${config.defaultProvider || "default"}）。`
-          : `已解绑 ${word}，用它提问会提示未绑定。`;
-      return reply(msg, `${note}已生效。`);
-    }
-
     // ---- 改名 ----
     if (cmd === "改名" || cmd === "设置名称") {
       const first = unwrapArg((rest[0] || "").trim());
@@ -1448,14 +1355,6 @@ return out;
       return reply(msg, `已清空全部对话上下文（${n} 组）`);
     }
 
-    if (cmd === "绑定列表" || cmd === "查看绑定") {
-      const lines = TRIGGER_WORDS.map((w) => {
-        const bound = config.triggerMap[w];
-        if (bound) return `${w} → ${bound}`;
-        return w === "@ai" ? `${w} → ${config.defaultProvider || "default"}（默认）` : `${w} → （未绑定）`;
-      });
-      return reply(msg, `触发词绑定：\n${lines.join("\n")}`);
-    }
 
     return reply(msg, "未知命令。发 /ai 帮助 看全部命令（都是代码写死的固定说明，不走模型）。");
   }
@@ -1737,23 +1636,9 @@ return out;
 
   async function handleChat(msg, chatId, senderId, speakerName, parsed) {
     if (!parsed.question) {
-      await reply(msg, "在触发词后面写上你的问题，例如：@ai 今天天气怎么样");
+      await reply(msg, "把问题和 @ 一起发出来，例如：@我 今天天气怎么样");
       return;
     }
-    if (parsed.providerName === null) {
-      // 未绑定提示带 10 分钟冷却（按会话+触发词）：防止同群另一个机器人或群友
-      // 反复用未绑定触发词把这条提示刷满屏。
-      const nKey = `${chatId}:${parsed.trigger}`;
-      const now = Date.now();
-      if (now - (unboundNoticeAt.get(nKey) || 0) < 10 * 60 * 1000) {
-        logger.info(`未绑定提示冷却中，静默（chat=${chatId} trigger=${parsed.trigger}）`);
-        return;
-      }
-      unboundNoticeAt.set(nKey, now);
-      await reply(msg, `触发词 ${parsed.trigger} 还没有绑定模型，请联系号主绑定（/ai 绑定）。`);
-      return;
-    }
-
     // 普通用户冷却：间隔太短的提问直接忽略，防止刷屏烧额度。
     if (isCoolingDown(senderId)) return;
 
@@ -1885,7 +1770,7 @@ return out;
       return true;
     }
     if (question === "/ai 模型") {
-      const name = resolveProvider(DEFAULT_TRIGGER, config.triggerMap, config.defaultProvider);
+      const name = config.defaultProvider || "default";
       const entry = name ? pool.getByName(name) : null;
       await reply(msg, entry ? `当前默认提供方：${entry.name}（模型 ${entry.model}）` : `当前默认提供方：${name || "default"}`);
       return true;
@@ -1928,9 +1813,7 @@ return out;
       // 主要用途：同群的另一个机器人号——两个号永不互相搭理，杜绝互相触发死循环。
       if ((config.ignoreSenderIds || []).map(String).includes(senderId)) return;
 
-      // 防死循环（回声免疫）：「未绑定」提示文案被另一个同款机器人原样发出又送达
-      // 回来时，直接忽略；机器人自己发过的固定文案被原样送回（非号主）也忽略。
-      if (text && isUnboundNoticeText(text)) return;
+      // 防死循环（回声免疫）：机器人自己发过的固定文案被原样送回（非号主）时忽略。
       if (text && roleOf(senderId, permConfig()) !== "owner" && recentSentTexts.includes(text.trim())) {
         logger.info(`回声免疫：忽略与机器人已发文案完全相同的消息（chat=${chatId}）`);
         return;
@@ -2038,7 +1921,6 @@ return out;
 
       let parsed = parseTrigger(text, {
         username: config.myUsername,
-        triggerMap: config.triggerMap,
         defaultProvider: config.defaultProvider,
         usernameTrigger: config.usernameTrigger,
         role,
@@ -2056,23 +1938,23 @@ return out;
         }
       }
 
-      // 回复续聊：没命中触发词时，若这条消息回复的是机器人自己发出的消息，也算触发，
+      // 回复续聊：没命中提及时，若这条消息回复的是机器人自己发出的消息，也算触发，
       // 问题就是消息全文（群聊、私聊都适用）。
       if (!parsed && repliedMsg && isReplyToSelf(repliedMsg, selfId)) {
         parsed = {
           kind: "reply",
           trigger: null,
-          providerName: resolveProvider(DEFAULT_TRIGGER, config.triggerMap, config.defaultProvider),
+          providerName: config.defaultProvider || "default",
           question: text.trim(),
         };
       }
 
-      // 私聊直通：私聊里不用 @ 也不用触发词，任何普通文本（或一张图）都直接当问题。
+      // 私聊直通：私聊里不用 @，任何普通文本（或一张图）都直接当问题。
       if (!parsed && isPrivateChat) {
         parsed = {
           kind: "direct",
           trigger: null,
-          providerName: resolveProvider(DEFAULT_TRIGGER, config.triggerMap, config.defaultProvider),
+          providerName: config.defaultProvider || "default",
           question: text.trim(),
         };
       }
