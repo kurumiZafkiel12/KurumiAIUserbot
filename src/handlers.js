@@ -6,6 +6,7 @@ import {
   parseOwnerCommand,
   resolveProvider,
   isReplyToSelf,
+  isHelpQuery,
   TRIGGER_WORDS,
   DEFAULT_TRIGGER,
 } from "./triggers.js";
@@ -29,6 +30,40 @@ const TG_MESSAGE_LIMIT = 4000; // Telegram 单条消息上限约 4096，留点�
 
 /** 占位消息文案（纯文字，不带任何表情，用户定版格式）。 */
 export const PLACEHOLDER_TEXT = "（思考中...）";
+
+/**
+ * 号主帮助：代码写死的固定文本（不走模型），内容与 handleOwnerCommand 的真实分支逐条对齐。
+ * 号主命令两种前缀都能用：@ai 和 /ai（如「@ai 状态」或「/ai 状态」）。
+ */
+export const OWNER_HELP_TEXT = `号主命令帮助（两种前缀都能用：「@ai 状态」或「/ai 状态」）：
+
+状态：查看运行状态、已运行时长与全局开关
+账单：查看今日用量与 API 余额（「用量」是它的别名）
+关闭 / 开启：一键全局暂停 / 恢复回复（暂停时任何人的提问都不回、不调模型）
+记住 <内容>：往当前会话的记事本里加一条
+记事本：查看当前会话记事本（带序号）
+忘掉 <序号>：删掉记事本里的第 N 条
+清空记事本：清空当前会话的记事本
+加管理员 <用户ID> / 删管理员 <用户ID> / 管理员列表：管理管理员名单
+拉黑 <用户ID> / 解封 <用户ID>：拉黑或解封某个用户（拉黑后其提问一律不理）
+清空上下文：清空全部对话上下文
+绑定列表：查看每个触发词绑定了哪个模型
+帮助：就是这份帮助（发 help 也一样）
+
+群友用法：群里 @机器人用户名 提问、回复机器人的消息续聊，或私聊直接发消息即可。`;
+
+/**
+ * 公开帮助：给普通用户看的固定文本（不走模型），只写群友能用的，
+ * 不含任何号主命令与敏感信息。
+ */
+export const PUBLIC_HELP_TEXT = `使用帮助：
+
+- 群里：@机器人用户名 + 你的问题，就能问我
+- 回复我发出的任意一条消息提问，就能接着上文继续聊，不用再 @
+- 私聊：直接发消息就行，不用 @、不用加任何前缀
+- 问现在几点、今天几号，我按北京时间回答
+
+想让我做点什么，直接说就行。`;
 
 const CONSOLIDATE_EVERY = 8; // 每会话每答满 N 次，后台自动整理一次记事本与印象
 
@@ -216,6 +251,11 @@ export function createHandler(deps) {
   async function handleOwnerCommand(msg, chatId, senderId, body) {
     const [cmd, ...rest] = body.split(/\s+/);
 
+    if (cmd === "帮助" || cmd === "help") {
+      await reply(msg, OWNER_HELP_TEXT);
+      return;
+    }
+
     if (cmd === "状态") {
       const upSec = Math.floor((Date.now() - startedAt) / 1000);
       await reply(
@@ -331,7 +371,7 @@ export function createHandler(deps) {
 
     return reply(
       msg,
-      "未知命令。可用：状态、开启、关闭、账单、拉黑 <ID>、解封 <ID>、加管理员 <ID>、删管理员 <ID>、管理员列表、记住 <内容>、记事本、忘掉 <序号>、清空记事本、清空上下文、绑定列表",
+      "未知命令。可用：帮助、状态、开启、关闭、账单、拉黑 <ID>、解封 <ID>、加管理员 <ID>、删管理员 <ID>、管理员列表、记住 <内容>、记事本、忘掉 <序号>、清空记事本、清空上下文、绑定列表（发 @ai 帮助 看全文说明）",
     );
   }
 
@@ -476,7 +516,7 @@ export function createHandler(deps) {
       const cn = extractCallName(text);
       if (cn) profiles.setCallName(senderId, cn);
 
-      // 号主命令：必须是创建者本人，且以 “@ai ” 开头。
+      // 号主命令：必须是创建者本人，且以 “@ai ” 或 “/ai ” 开头。
       if (canRunOwnerCommand(senderId, permConfig())) {
         const body = parseOwnerCommand(text);
         if (body !== null) {
@@ -539,6 +579,15 @@ export function createHandler(deps) {
       }
 
       if (!parsed) return;
+
+      // 帮助拦截：被触发后提取出的问题恰好是「帮助」类写法时，直接回代码写死的
+      // 公开版帮助，不发占位符、不调模型（不然模型会现编一份假能力清单）。
+      // 号主本人的 @ai 帮助 / /ai 帮助 已在上面的号主命令里处理（回的是更全的号主帮助），
+      // 走到这里的都是普通用户，或号主以普通提问方式问的帮助。
+      if (isHelpQuery(parsed.question)) {
+        await reply(msg, PUBLIC_HELP_TEXT);
+        return;
+      }
 
       // 发言者显示名（给历史标签与身份段用）；拿不到就留空，不影响主流程。
       let speakerName = "";
