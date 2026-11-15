@@ -11,6 +11,7 @@ import {
   ownerNote,
   describeRole,
   shouldPauseBlock,
+  speakerAssertion,
 } from "../src/permissions.js";
 
 const CFG = { ownerId: "111", adminIds: ["222", "333"], privateChat: "all" };
@@ -92,4 +93,17 @@ test("shouldPauseBlock：暂停时普通用户和管理员都拦，只有创建�
   assert.equal(shouldPauseBlock(true, "222", CFG), true); // 管理员：也拦，暂停不给任何人开口子
   assert.equal(shouldPauseBlock(true, "111", CFG), false); // 创建者：放行（命令与本人消息不误拦）
   assert.equal(shouldPauseBlock(true, 111, CFG), false); // 数字 ID 混用也能认
+});
+
+test("speakerAssertion：三档各给结论，且绝不带任何数字 ID", () => {
+  const owner = speakerAssertion("111", CFG);
+  assert.ok(owner.startsWith("【本轮发言者】"));
+  assert.ok(owner.includes("主人本人"));
+  const admin = speakerAssertion("222", CFG);
+  assert.ok(admin.includes("管理员"));
+  const user = speakerAssertion("999", CFG);
+  assert.ok(user.includes("不是主人，也不是管理员"));
+  for (const s of [owner, admin, user]) {
+    assert.ok(!/\d/.test(s), `断言段不应出现数字：${s}`);
+  }
 });
