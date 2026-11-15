@@ -12,6 +12,7 @@ parseMentionOwnerCommand,
 resolveProvider,
 isReplyToSelf,
 isHelpQuery,
+isUnboundNoticeText,
 TRIGGER_WORDS,
 DEFAULT_TRIGGER,
 } from "./triggers.js";
@@ -251,6 +252,10 @@ const sensitiveKeywordsSet = new Set(config.sensitiveKeywords || []);
 const lastAskAt = new Map();
 /** @type {Map<string, number>} 代码关键词命中计数（内存版，累计到 CODE_WARN_LIMIT 拉黑） */
 const codeWarnCounts = new Map();
+/** @type {Map<string, number>} 未绑定提示上次发送时间（按 chat+触发词计，10 分钟冷却，防刷屏与互相触发） */
+const unboundNoticeAt = new Map();
+/** @type {string[]} 机器人最近经 reply() 发出的文案（回声免疫：同文再被送达就忽略） */
+const recentSentTexts = [];
 
 // 权限判断用的配置视图：管理员名单以运行时 Set 为准（命令增删后立刻生效，不必重启）。
 function permConfig() {
@@ -259,6 +264,8 @@ return { ownerId: config.ownerId, adminIds: [...adminIds], privateChat: config.p
 
 async function reply(msg, text) {
 await client.sendMessage(msg.peerId, { message: text, replyTo: msg.id});
+recentSentTexts.push(String(text).trim());
+if (recentSentTexts.length > 30) recentSentTexts.shift();
 }
 
 function persistBlacklist() {
@@ -1734,6 +1741,15 @@ return out;
       return;
     }
     if (parsed.providerName === null) {
+      // 未绑定提示带 10 分钟冷却（按会话+触发词）：防止同群另一个机器人或群友
+      // 反复用未绑定触发词把这条提示刷满屏。
+      const nKey = `${chatId}:${parsed.trigger}`;
+      const now = Date.now();
+      if (now - (unboundNoticeAt.get(nKey) || 0) < 10 * 60 * 1000) {
+        logger.info(`未绑定提示冷却中，静默（chat=${chatId} trigger=${parsed.trigger}）`);
+        return;
+      }
+      unboundNoticeAt.set(nKey, now);
       await reply(msg, `触发词 ${parsed.trigger} 还没有绑定模型，请联系号主绑定（/ai 绑定）。`);
       return;
     }
@@ -1907,6 +1923,18 @@ return out;
       if (!senderId) return;
 
       if (blacklist.has(senderId)) return;
+
+      // 忽略名单（本地 config.ignoreSenderIds）：名单内账号的消息一律不处理。
+      // 主要用途：同群的另一个机器人号——两个号永不互相搭理，杜绝互相触发死循环。
+      if ((config.ignoreSenderIds || []).map(String).includes(senderId)) return;
+
+      // 防死循环（回声免疫）：「未绑定」提示文案被另一个同款机器人原样发出又送达
+      // 回来时，直接忽略；机器人自己发过的固定文案被原样送回（非号主）也忽略。
+      if (text && isUnboundNoticeText(text)) return;
+      if (text && roleOf(senderId, permConfig()) !== "owner" && recentSentTexts.includes(text.trim())) {
+        logger.info(`回声免疫：忽略与机器人已发文案完全相同的消息（chat=${chatId}）`);
+        return;
+      }
 
       // 私聊的判定：peer 是单个用户（userId）且不带群/频道 ID。
       const isPrivateChat = Boolean(msg.peerId?.userId) && !msg.peerId?.chatId && !msg.peerId?.channelId;
@@ -2106,6 +2134,14 @@ return out;
           await reply(msg, `已切换你的音色为：${vs}`);
           return;
         }
+      }
+
+      // 命令形文本兜底：提取出的问题以「/ai 」开头，说明对方在发命令，但号主命令
+      // 与公开命令都没匹配上（命令不存在或无权用）——固定回一句，绝不把命令原文
+      // 丢给模型瞎答（用户 2026-11-15 明令）。
+      if (!photoSource && /^\/ai(\s|$)/.test(parsed.question)) {
+        await reply(msg, "这条 /ai 后面的命令不存在，或你用不了。发 /ai 帮助 看能用的命令；想聊天就直接 @我 说问题。");
+        return;
       }
 
       // 屏蔽群/屏蔽词：屏蔽群内的问题命中屏蔽词 → 静默不回（号主豁免，管理员不豁免）。
