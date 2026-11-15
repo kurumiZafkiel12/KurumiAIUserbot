@@ -1,7 +1,15 @@
 // 消息处理：路由触发词与号主命令，跑流式问答并把结果编辑回占位消息。
 // 整个处理函数包在 try/catch 里：任何异常都记日志，绝不静默吞掉。
 
-import { parseTrigger, parseOwnerCommand, TRIGGER_WORDS } from "./triggers.js";
+import {
+  parseTrigger,
+  parseOwnerCommand,
+  resolveProvider,
+  isReplyToSelf,
+  TRIGGER_WORDS,
+  DEFAULT_TRIGGER,
+} from "./triggers.js";
+import { formatNowLine } from "./time.js";
 import { saveConfigJson } from "./config.js";
 import { balanceReport } from "./billing.js";
 import { Notebook } from "./notebook.js";
@@ -19,15 +27,20 @@ import { RuntimeState } from "./state.js";
 const EDIT_INTERVAL_MS = 1500; // 流式刷新占位消息的最短间隔
 const TG_MESSAGE_LIMIT = 4000; // Telegram 单条消息上限约 4096，留点余量分片
 
+/** 占位消息文案（纯文字，不带任何表情，用户定版格式）。 */
+export const PLACEHOLDER_TEXT = "（思考中...）";
+
 const CONSOLIDATE_EVERY = 8; // 每会话每答满 N 次，后台自动整理一次记事本与印象
 
 /**
  * 创建消息处理函数（签名符合 GramJS 的 addEventHandler 回调）。
- * @param {object} deps { client, config, pool, store, logger, startedAt, notebook, profiles, state }
+ * @param {object} deps { client, config, pool, store, logger, startedAt, notebook, profiles, state, selfId }
  *   notebook / profiles / state 可省略，省略时用纯内存版（不落盘），方便测试与临时运行。
+ *   selfId 是本账号的数字 ID（回复续聊判定用），可省略，省略时回复续聊只认 out 标记。
  */
 export function createHandler(deps) {
   const { client, config, pool, store, logger, startedAt } = deps;
+  const selfId = deps.selfId !== undefined && deps.selfId !== null ? String(deps.selfId) : "";
   const notebook = deps.notebook || new Notebook(null);
   const profiles = deps.profiles || new UserProfiles(null);
   const state = deps.state || new RuntimeState(null);
@@ -342,7 +355,7 @@ export function createHandler(deps) {
     let placeholder;
     try {
       placeholder = await client.sendMessage(msg.peerId, {
-        message: "🤓 正在思考中...",
+        message: PLACEHOLDER_TEXT,
         replyTo: msg.id,
       });
     } catch (err) {
@@ -351,8 +364,8 @@ export function createHandler(deps) {
     }
 
     const history = store.get(chatId, senderId);
-    // 系统提示 = 基础提示 + 创建者信息（认主）+ 发言者身份/称呼 + 对他的印象 + 本会话记事本。
-    // 后三段都是程序生成的系统级信息，不是用户能伪造的。
+    // 系统提示 = 基础提示 + 创建者信息（认主）+ 发言者身份/称呼 + 对他的印象 + 本会话记事本 + 当前时间。
+    // 后几段都是程序生成的系统级信息，不是用户能伪造的。
     const systemParts = [config.systemPrompt];
     const on = ownerNote(config);
     if (on) systemParts.push(on);
@@ -362,6 +375,8 @@ export function createHandler(deps) {
     if (imp) systemParts.push(imp);
     const nb = notebookSegment(chatId);
     if (nb) systemParts.push(nb);
+    // 当前时间段：不给的话模型对「现在几点了」只能瞎编或说不知道。
+    systemParts.push(formatNowLine(config.timezone));
     const messages = [
       { role: "system", content: systemParts.join("\n") },
       ...history,
@@ -486,10 +501,43 @@ export function createHandler(deps) {
         return;
       }
 
-      const parsed = parseTrigger(text, {
+      let parsed = parseTrigger(text, {
         username: config.myUsername,
         triggerMap: config.triggerMap,
       });
+
+      // 回复续聊：没命中触发词时，若这条消息回复的是机器人自己发出的消息，也算触发，
+      // 问题就是消息全文（群聊、私聊都适用）。没带回复标记的消息直接跳过，不做无谓查询。
+      if (!parsed && (msg.replyTo || msg.replyToMsgId != null)) {
+        try {
+          if (typeof msg.getReplyMessage === "function") {
+            const replied = await msg.getReplyMessage();
+            if (isReplyToSelf(replied, selfId)) {
+              parsed = {
+                kind: "reply",
+                trigger: null,
+                providerName: resolveProvider(DEFAULT_TRIGGER, config.triggerMap),
+                question: text.trim(),
+              };
+            }
+          }
+        } catch (err) {
+          logger.error(`取被回复消息失败（chat=${chatId}）：${err.message}`);
+        }
+      }
+
+      // 私聊直通：私聊里不用 @ 也不用触发词，任何普通文本都直接当问题。
+      // （走在 parseTrigger 之后：文本恰好以提及/触发词开头时，仍用上面的解析结果，
+      // 不会把触发词留给模型看。号主命令、暂停门禁、私聊门禁都在更前面，不受影响。）
+      if (!parsed && isPrivateChat) {
+        parsed = {
+          kind: "direct",
+          trigger: null,
+          providerName: resolveProvider(DEFAULT_TRIGGER, config.triggerMap),
+          question: text.trim(),
+        };
+      }
+
       if (!parsed) return;
 
       // 发言者显示名（给历史标签与身份段用）；拿不到就留空，不影响主流程。
