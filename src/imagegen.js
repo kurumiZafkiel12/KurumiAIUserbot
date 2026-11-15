@@ -1,35 +1,110 @@
 // 生图：带 image 标记的提供方不进聊天池，只用来生图。
-// 触发条件与 tgai 时代等价：问题里带「画一张/生成图片/帮我画」这类明确的生图说法。
+// 触发判定（审计 K062-16 收紧）：旧版是几十个子串触发词，太宽——「生成一个」
+// 会命中「生成一个 Python 函数」、「来一个」会命中「来一个笑话」。新版按句式判定：
+// ① 固定短语（画图/生成图片等整词就是生图说法）；
+// ② 生成类动词（生成/做/设计/来/弄…）后面必须带图像类名词（图/图片/壁纸/头像…），
+//    可以隔着量词与少量字（如「生成一张 猫的图片」）；
+// ③ 画/绘制自带产出图像的语义，动词+量词（如「画一张」「画只猫」）即算生图。
 // 请求构造与结果解析是纯函数，可单测。
 
-/** 生图触发词（命中任一即视为生图请求）。 */
-export const GENERATE_KEYWORDS = [
-  "生成图片", "生成图", "生成一张", "生成一幅", "生成个", "生成张", "生成一个", "生成一下",
-  "生成照片", "生成头像", "生成壁纸", "生成封面", "生成海报", "帮我生成", "帮我做图",
-  "帮我弄张", "帮我弄个", "帮我搞张", "帮我搞个", "画一张", "画一幅", "画一个", "画一下",
-  "画个", "画张", "画幅", "画只", "画一画", "帮我画", "帮我画个", "帮我画张", "帮我画幅",
-  "给我画", "给我画个", "给我画张", "给我画幅", "来一张", "来一幅", "来一个", "来张",
-  "来幅", "来只", "能画", "能生成", "能帮我画", "能不能画", "可以画", "可以生成",
-  "作图", "做一张图", "做张图", "做个图", "做一幅图", "弄一张", "弄一幅", "弄个图",
-  "搞一张", "搞个图", "设计一张", "设计一个", "画图", "出图",
+/** 图像类名词：生成类动词后面必须出现它才算生图。 */
+const IMAGE_NOUNS = [
+  "证件照", "表情包",
+  "图片", "图像", "图画", "照片", "相片", "壁纸", "头像", "封面", "海报",
+  "插画", "插图", "漫画", "贴纸", "图标", "画作", "油画", "水彩画", "素描",
+  "原画", "立绘", "自拍", "图", "画",
 ];
+
+/** 固定短语：整词命中即生图。 */
+const FIXED_PHRASES = [
+  "生成图片", "生成图像", "生成照片", "生成头像", "生成壁纸", "生成封面", "生成海报",
+  "画图", "作图", "出图", "做图",
+];
+
+/** 生成类动词（长词在前，匹配时优先）。 */
+const VERBS = ["生成", "制作", "设计", "绘制", "做", "弄", "搞", "来", "出", "整", "画", "创作"];
+
+/** 画/绘制：动词+量词即成立，不必再出现图像名词。 */
+const DRAW_VERBS = new Set(["画", "绘制"]);
+
+/** 量词（长词在前）。 */
+const QUANTIFIERS = ["一张", "一幅", "一个", "一只", "一份", "一副", "张", "幅", "个", "只", "份", "副"];
+
+/** 有量词时，图像名词可以隔着这么多字出现（如「生成一张 猫的图片」）。 */
+const NOUN_WINDOW = 6;
+
+/** 在 rest 开头附近找图像名词：返回 {index, noun} 或 null。 */
+function findImageNoun(rest) {
+  let best = null;
+  for (const noun of IMAGE_NOUNS) {
+    const idx = rest.indexOf(noun);
+    if (idx >= 0 && idx <= NOUN_WINDOW && (!best || idx < best.index || (idx === best.index && noun.length > best.noun.length))) {
+      best = { index: idx, noun };
+    }
+  }
+  return best;
+}
+
+/**
+ * 在问题里找生图触发片段，返回 {start, end}（end 为剥离 prompt 时要删掉的右界）或 null。
+ * 判定规则见文件头注释。
+ */
+function findImageGenTrigger(q) {
+  for (const p of FIXED_PHRASES) {
+    const i = q.indexOf(p);
+    if (i >= 0) return { start: i, end: i + p.length };
+  }
+  for (let i = 0; i < q.length; i++) {
+    for (const verb of VERBS) {
+      if (!q.startsWith(verb, i)) continue;
+      let j = i + verb.length;
+      let quantifier = "";
+      for (const qt of QUANTIFIERS) {
+        if (q.startsWith(qt, j)) {
+          quantifier = qt;
+          j += qt.length;
+          break;
+        }
+      }
+      // 画/绘制 + 量词：宾语可以是任意内容物（画一张猫、画只柴犬都算）。
+      if (DRAW_VERBS.has(verb) && quantifier) return { start: i, end: j };
+      const hit = findImageNoun(q.slice(j));
+      if (!hit) continue;
+      if (hit.index === 0) {
+        // 图像名词紧跟动词/量词：整段都是触发语，prompt 剥离时一并去掉。
+        return { start: i, end: j + hit.noun.length };
+      }
+      if (quantifier) {
+        // 隔着几个字才出现图像名词（如「生成一张 猫的图片」）：只剥动词+量词，
+        // 后面的描述（猫的图片）留作 prompt。
+        return { start: i, end: j };
+      }
+      // 无量词又隔着字才出现图像名词（如「来看看图片」）：不算生图，太容易误伤。
+    }
+  }
+  return null;
+}
 
 /** 是不是生图请求。 */
 export function isImageGenRequest(question) {
   const q = String(question || "");
   if (!q) return false;
-  return GENERATE_KEYWORDS.some((k) => q.includes(k));
+  return findImageGenTrigger(q) !== null;
 }
 
 /**
- * 从问题里剥掉生图触发词，剩下的就是画面描述（prompt）。
- * 长词优先剥，避免「帮我画个」只剥掉「画个」留下残句。
+ * 从问题里剥掉生图触发片段，剩下的就是画面描述（prompt）。
+ * 顺带清掉残留的请求前缀（帮我/给我/能…）与句尾语气词（吗/么）。
  */
 export function extractImagePrompt(question) {
-  let out = String(question || "");
-  const sorted = [...GENERATE_KEYWORDS].sort((a, b) => b.length - a.length);
-  for (const k of sorted) out = out.split(k).join(" ");
-  return out.replace(/\s+/g, " ").replace(/^[\s，。：:、]+|[\s，。、]+$/g, "").trim();
+  const q = String(question || "");
+  const trigger = findImageGenTrigger(q);
+  if (!trigger) return q.trim();
+  let out = `${q.slice(0, trigger.start)} ${q.slice(trigger.end)}`;
+  out = out.replace(/\s+/g, " ").trim();
+  out = out.replace(/^(帮我|给我|请帮我|请给我|请|麻烦|能不能|能|可以)+/, "").trim();
+  out = out.replace(/(吗|么)+$/, "").trim();
+  return out.replace(/^[\s，。：:、]+|[\s，。、]+$/g, "").trim();
 }
 
 /** 构造 /images/generations 请求（纯函数）。 */
