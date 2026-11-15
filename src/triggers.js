@@ -1,17 +1,9 @@
-// 触发词解析：纯函数，无外部依赖，方便单元测试。
+// 触发解析：纯函数，无外部依赖，方便单元测试。
 //
-// 触发方式有两种：
-// 1. 提及机器人用户名：消息中包含 “@<MY_USERNAME>”
-// 2. 触发词：@aa ～ @az，每个触发词可在 triggerMap 里绑定一个模型提供方；
-//    其中 @ai 是默认触发词，未显式绑定时指向名为 "default" 的提供方（即 .env 里的接口）。
-
-const LETTERS = "abcdefghijklmnopqrstuvwxyz";
-
-/** 全部可用触发词，按顺序 @aa、@ab、…、@az。 */
-export const TRIGGER_WORDS = LETTERS.split("").map((ch) => `@a${ch}`);
-
-/** 默认触发词。 */
-export const DEFAULT_TRIGGER = "@ai";
+// 触发方式只有一种：提及机器人用户名——消息中包含 “@<MY_USERNAME>”。
+// （回复机器人消息续聊、私聊直通在 handlers 里另行判定。）
+// 2026-11-15 用户明令：@ai、@ab 这类触发词全部取消——它们曾让两个机器人
+// 互相触发死循环刷屏，且和 @用户名 提及功能重复。
 
 /** 默认提供方名字（.env 里配置的接口）。 */
 export const DEFAULT_PROVIDER = "default";
@@ -22,67 +14,33 @@ export const DEFAULT_PROVIDER = "default";
  * @param {string} text 消息全文
  * @param {object} options
  * @param {string} [options.username] 机器人用户名（不带 @）
- * @param {Object<string,string>} [options.triggerMap] 触发词 -> 提供方名字
- * @param {string} [options.defaultProvider] 默认提供方名字（号主用 /ai 换模型 设的，
- *   未显式绑定触发词时优先用它；缺省回退到名为 "default" 的提供方）
+ * @param {string} [options.defaultProvider] 默认提供方名字（号主用 /ai 换模型 设的；
+ *   缺省回退到名为 "default" 的提供方）
  * @param {boolean} [options.usernameTrigger] 用户名触发开关（默认开）。
  *   关时普通用户（role="user"）的 @用户名 提及不触发；号主/管理员不受影响。
  * @param {string} [options.role] 发言者档位："owner" / "admin" / "user"，只影响上面的开关判定
- * @returns {null | {kind: "mention"|"trigger", trigger: string, providerName: string|null, question: string}}
- *   providerName 为 null 表示该触发词尚未绑定任何提供方。
+ * @returns {null | {kind: "mention", trigger: string, providerName: string, question: string}}
  */
 export function parseTrigger(text, options = {}) {
-  const { username = "", triggerMap = {}, defaultProvider = "", usernameTrigger = true, role = "owner" } = options;
+  const { username = "", defaultProvider = "", usernameTrigger = true, role = "owner" } = options;
   if (!text || typeof text !== "string") return null;
 
   const mention = username ? `@${username}` : null;
 
-  // 1) 提及用户名：出现在消息任意位置都算触发，问题是去掉提及后的剩余文本。
-  //    用户名触发被号主关掉时，普通用户的提及不算触发（继续往下看有没有触发词命中）。
+  // 提及用户名：出现在消息任意位置都算触发，问题是去掉提及后的剩余文本。
+  // 用户名触发被号主关掉时，普通用户的提及不算触发。
   const mentionBlocked = usernameTrigger === false && role === "user";
   if (mention && !mentionBlocked && text.includes(mention)) {
     const question = text.split(mention).join(" ").replace(/\s+/g, " ").trim();
     return {
       kind: "mention",
       trigger: mention,
-      providerName: resolveProvider(DEFAULT_TRIGGER, triggerMap, defaultProvider),
+      providerName:
+        typeof defaultProvider === "string" && defaultProvider ? defaultProvider : DEFAULT_PROVIDER,
       question,
     };
   }
 
-  // 2) 触发词：只认消息开头（容忍前导空白），且后面不能紧跟英文字母或数字。
-  //    句中出现触发词不触发——否则机器人自己的提示文案（如「触发词 @aa 还没有
-  //    绑定模型」）会被另一个机器人当成触发，在群里无限互相回复（v0.6.0 实机事故）。
-  const lead = text.trimStart();
-  for (const word of TRIGGER_WORDS) {
-    if (!lead.startsWith(word)) continue;
-    const after = lead.length > word.length ? lead[word.length] : "";
-    if (/[A-Za-z0-9]/.test(after)) continue;
-    const question = lead.slice(word.length).replace(/\s+/g, " ").trim();
-    return {
-      kind: "trigger",
-      trigger: word,
-      providerName: resolveProvider(word, triggerMap, defaultProvider),
-      question,
-    };
-  }
-
-  return null;
-}
-
-/**
- * 查某个触发词绑定的提供方。
- * 显式绑定最优先；@ai 未绑定时回退到 defaultProvider（号主设的默认提供方），
- * 再没有就回退到名为 "default" 的提供方；其余未绑定返回 null。
- */
-export function resolveProvider(trigger, triggerMap = {}, defaultProvider = "") {
-  if (triggerMap && typeof triggerMap[trigger] === "string" && triggerMap[trigger]) {
-    return triggerMap[trigger];
-  }
-  if (trigger === DEFAULT_TRIGGER) {
-    if (typeof defaultProvider === "string" && defaultProvider) return defaultProvider;
-    return DEFAULT_PROVIDER;
-  }
   return null;
 }
 
@@ -103,13 +61,13 @@ export function isReplyToSelf(replied, selfId) {
   return sid !== "" && sid === String(selfId);
 }
 
-/** 号主命令前缀：只认 “/ai ”（用户定版规矩）。“@ai” 只是聊天触发词，绝不当命令前缀。 */
+/** 号主命令前缀：只认 “/ai ”（用户定版规矩）。 */
 export const OWNER_COMMAND_PREFIX = "/ai ";
 
 /**
  * 判断文本是不是号主命令：以 “/ai ” 开头（号主身份由调用方另行校验）。
  * 返回去掉前缀后的命令正文；不是命令则返回 null。
- * 注意：“@ai …” 是触发词聊天，不是命令，这里一律返回 null。
+ * 注意：只有以 “/ai ” 开头的文本才是命令，“@ai …” 之类一律返回 null。
  */
 export function parseOwnerCommand(text) {
   if (!text || typeof text !== "string") return null;
@@ -135,13 +93,8 @@ export function parseMentionOwnerCommand(text, username) {
   return parseOwnerCommand(rest);
 }
 
-/** 机器人自己发出的「未绑定」提示文案的开头特征：收到以此开头的消息一律忽略，防两个机器人互相触发死循环。 */
-export function isUnboundNoticeText(text) {
-  return typeof text === "string" && /^触发词\s+@[a-z]{2}\s+还没有绑定模型/.test(text.trimStart());
-}
-
 /** 帮助类问题（触发后提取出的问题恰好是这几个写法之一，就走代码写死的帮助，不调模型）。 */
-const HELP_QUERIES = new Set(["帮助", "help", "/ai 帮助", "@ai 帮助"]);
+const HELP_QUERIES = new Set(["帮助", "help", "/ai 帮助"]);
 
 /**
  * 判断提取出的问题是不是在要帮助：容忍首尾空格、内部多余空白，英文不分大小写。
@@ -151,18 +104,4 @@ export function isHelpQuery(text) {
   if (!text || typeof text !== "string") return false;
   const normalized = text.trim().replace(/\s+/g, " ").toLowerCase();
   return HELP_QUERIES.has(normalized);
-}
-
-/** 在文本中找独立出现的 word（前后不紧跟 [A-Za-z0-9]），返回下标，找不到返回 -1。 */
-function findWord(text, word) {
-  let from = 0;
-  while (from <= text.length - word.length) {
-    const idx = text.indexOf(word, from);
-    if (idx < 0) return -1;
-    const before = idx > 0 ? text[idx - 1] : "";
-    const after = idx + word.length < text.length ? text[idx + word.length] : "";
-    if (!/[A-Za-z0-9]/.test(before) && !/[A-Za-z0-9]/.test(after)) return idx;
-    from = idx + 1;
-  }
-  return -1;
 }
