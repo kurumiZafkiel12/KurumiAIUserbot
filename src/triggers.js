@@ -90,16 +90,35 @@ export function isReplyToSelf(replied, selfId) {
   return sid !== "" && sid === String(selfId);
 }
 
+/** 号主命令的两种前缀：触发词式 “@ai ” 与 tgai 时代习惯的 “/ai ”，都认。 */
+export const OWNER_COMMAND_PREFIXES = [`${DEFAULT_TRIGGER} `, "/ai "];
+
 /**
- * 判断文本是不是号主命令：以 “@ai ” 开头（号主身份由调用方另行校验）。
+ * 判断文本是不是号主命令：以 “@ai ” 或 “/ai ” 开头（号主身份由调用方另行校验）。
  * 返回去掉前缀后的命令正文；不是命令则返回 null。
  */
 export function parseOwnerCommand(text) {
   if (!text || typeof text !== "string") return null;
-  const prefix = `${DEFAULT_TRIGGER} `;
-  if (!text.startsWith(prefix)) return null;
-  const body = text.slice(prefix.length).trim();
-  return body.length > 0 ? body : null;
+  for (const prefix of OWNER_COMMAND_PREFIXES) {
+    if (text.startsWith(prefix)) {
+      const body = text.slice(prefix.length).trim();
+      return body.length > 0 ? body : null;
+    }
+  }
+  return null;
+}
+
+/** 帮助类问题（触发后提取出的问题恰好是这几个写法之一，就走代码写死的帮助，不调模型）。 */
+const HELP_QUERIES = new Set(["帮助", "help", "/ai 帮助", "@ai 帮助"]);
+
+/**
+ * 判断提取出的问题是不是在要帮助：容忍首尾空格、内部多余空白，英文不分大小写。
+ * 只认整句恰好等于上述写法，「帮助我」「请给我帮助」之类不算。
+ */
+export function isHelpQuery(text) {
+  if (!text || typeof text !== "string") return false;
+  const normalized = text.trim().replace(/\s+/g, " ").toLowerCase();
+  return HELP_QUERIES.has(normalized);
 }
 
 /** 在文本中找独立出现的 word（前后不紧跟 [A-Za-z0-9]），返回下标，找不到返回 -1。 */
