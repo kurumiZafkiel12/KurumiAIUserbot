@@ -23,22 +23,29 @@ export const DEFAULT_PROVIDER = "default";
  * @param {object} options
  * @param {string} [options.username] 机器人用户名（不带 @）
  * @param {Object<string,string>} [options.triggerMap] 触发词 -> 提供方名字
+ * @param {string} [options.defaultProvider] 默认提供方名字（号主用 /ai 换模型 设的，
+ *   未显式绑定触发词时优先用它；缺省回退到名为 "default" 的提供方）
+ * @param {boolean} [options.usernameTrigger] 用户名触发开关（默认开）。
+ *   关时普通用户（role="user"）的 @用户名 提及不触发；号主/管理员不受影响。
+ * @param {string} [options.role] 发言者档位："owner" / "admin" / "user"，只影响上面的开关判定
  * @returns {null | {kind: "mention"|"trigger", trigger: string, providerName: string|null, question: string}}
  *   providerName 为 null 表示该触发词尚未绑定任何提供方。
  */
 export function parseTrigger(text, options = {}) {
-  const { username = "", triggerMap = {} } = options;
+  const { username = "", triggerMap = {}, defaultProvider = "", usernameTrigger = true, role = "owner" } = options;
   if (!text || typeof text !== "string") return null;
 
   const mention = username ? `@${username}` : null;
 
   // 1) 提及用户名：出现在消息任意位置都算触发，问题是去掉提及后的剩余文本。
-  if (mention && text.includes(mention)) {
+  //    用户名触发被号主关掉时，普通用户的提及不算触发（继续往下看有没有触发词命中）。
+  const mentionBlocked = usernameTrigger === false && role === "user";
+  if (mention && !mentionBlocked && text.includes(mention)) {
     const question = text.split(mention).join(" ").replace(/\s+/g, " ").trim();
     return {
       kind: "mention",
       trigger: mention,
-      providerName: resolveProvider(DEFAULT_TRIGGER, triggerMap),
+      providerName: resolveProvider(DEFAULT_TRIGGER, triggerMap, defaultProvider),
       question,
     };
   }
@@ -53,7 +60,7 @@ export function parseTrigger(text, options = {}) {
       return {
         kind: "trigger",
         trigger: word,
-        providerName: resolveProvider(word, triggerMap),
+        providerName: resolveProvider(word, triggerMap, defaultProvider),
         question,
       };
     }
@@ -63,13 +70,18 @@ export function parseTrigger(text, options = {}) {
 }
 
 /**
- * 查某个触发词绑定的提供方。@ai 未绑定时回退到默认提供方；其余未绑定返回 null。
+ * 查某个触发词绑定的提供方。
+ * 显式绑定最优先；@ai 未绑定时回退到 defaultProvider（号主设的默认提供方），
+ * 再没有就回退到名为 "default" 的提供方；其余未绑定返回 null。
  */
-export function resolveProvider(trigger, triggerMap = {}) {
+export function resolveProvider(trigger, triggerMap = {}, defaultProvider = "") {
   if (triggerMap && typeof triggerMap[trigger] === "string" && triggerMap[trigger]) {
     return triggerMap[trigger];
   }
-  if (trigger === DEFAULT_TRIGGER) return DEFAULT_PROVIDER;
+  if (trigger === DEFAULT_TRIGGER) {
+    if (typeof defaultProvider === "string" && defaultProvider) return defaultProvider;
+    return DEFAULT_PROVIDER;
+  }
   return null;
 }
 
