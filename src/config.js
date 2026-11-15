@@ -6,6 +6,8 @@ import path from "node:path";
 import { config as loadDotenv } from "dotenv";
 import { DEFAULT_PROVIDER } from "./triggers.js";
 import { normalizeAdminIds } from "./permissions.js";
+import { normalizeVisionPool } from "./vision.js";
+import { DEFAULT_SERPER_BASE, DEFAULT_TAVILY_BASE } from "./search.js";
 
 loadDotenv();
 
@@ -45,6 +47,40 @@ export function saveConfigJson(patch) {
 function envBool(value, fallback) {
   if (value === undefined || value === "") return fallback;
   return ["1", "true", "yes", "on"].includes(String(value).trim().toLowerCase());
+}
+
+/** 把 config.json 里的「字符串 -> 字符串」对象字段规范化（音色库、人格、每群条数等）。 */
+function stringMap(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  const out = {};
+  for (const [k, v] of Object.entries(value)) {
+    const key = String(k || "").trim();
+    if (key && typeof v === "string") out[key] = v;
+  }
+  return out;
+}
+
+/** 把 config.json 里的「字符串 -> 布尔」对象字段规范化（每群开关）。 */
+function boolMap(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  const out = {};
+  for (const [k, v] of Object.entries(value)) {
+    const key = String(k || "").trim();
+    if (key) out[key] = v === true;
+  }
+  return out;
+}
+
+/** 把 config.json 里的「字符串 -> 正数」对象字段规范化（每群记录条数）。 */
+function numberMap(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  const out = {};
+  for (const [k, v] of Object.entries(value)) {
+    const key = String(k || "").trim();
+    const n = Number(v);
+    if (key && Number.isFinite(n) && n > 0) out[key] = Math.floor(n);
+  }
+  return out;
 }
 
 /**
@@ -144,5 +180,36 @@ export function loadConfig() {
     customProviders,
     providerOverrides,
     dailyLimits,
+
+    // ---- v0.6.0 起的字段 ----
+    // 破甲：只存本地 config.json（gitignore，永不进仓库），注入优先级 破甲 > 人设 > 默认风格。
+    poJia: typeof json.poJia === "string" ? json.poJia : "",
+    // 识图池：{ apiName: [{model, weight}] }，已规范化。
+    visionPool: normalizeVisionPool(json.visionPool),
+    // TTS：接口地址与 key（config.json 优先，.env 的 TTS_API_BASE / TTS_API_KEY 兜底）。
+    ttsApiBase: (typeof json.ttsApiBase === "string" && json.ttsApiBase.trim()) || (process.env.TTS_API_BASE || "").trim(),
+    ttsApiKey: (typeof json.ttsApiKey === "string" && json.ttsApiKey.trim()) || (process.env.TTS_API_KEY || "").trim(),
+    // 音色库：音色名 -> 音色 ID。人格：音色名 -> 人格提示词。
+    voiceBook: stringMap(json.voiceBook),
+    voicePersona: stringMap(json.voicePersona),
+    // 每群开关：saySwitch = 开启说（回答后追加语音），voiceSwitch = 开启换音色（群友可自选音色）。
+    saySwitch: boolMap(json.saySwitch),
+    voiceSwitch: boolMap(json.voiceSwitch),
+    // 当前音色：voiceByChat 是群级，voiceByChatUser 是个人级（键 "chatId_senderId"）。
+    voiceByChat: stringMap(json.voiceByChat),
+    voiceByChatUser: stringMap(json.voiceByChatUser),
+    // 群聊天记录：开启记录的群 ID 名单 + 每群注入条数（缺省 100）。
+    recordGroups: stringArray(json.recordGroups),
+    recordContextLimit: numberMap(json.recordContextLimit),
+    // 搜索 key：config.json 的 searchApiKey 优先（/ai 换搜索key 写它），.env 的 SEARCH_API_KEY 兜底。
+    searchApiKey:
+      (typeof json.searchApiKey === "string" && json.searchApiKey.trim()) || (process.env.SEARCH_API_KEY || "").trim(),
+    searchApiBase: (process.env.SEARCH_API_BASE || DEFAULT_SERPER_BASE).trim(),
+    searchApiBase2: (process.env.SEARCH_API_BASE_2 || DEFAULT_TAVILY_BASE).trim(),
+    // 号主改名（/ai 改名）：{first, last}，last 可空。设了之后名字时钟用它打头替代 NAME_PREFIX。
+    customName:
+      json.customName && typeof json.customName === "object" && typeof json.customName.first === "string" && json.customName.first.trim()
+        ? { first: json.customName.first.trim(), last: typeof json.customName.last === "string" ? json.customName.last.trim() : "" }
+        : null,
   };
 }
