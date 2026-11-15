@@ -26,6 +26,8 @@ export class ProviderPool {
       this.entries.push({
         name: def.name,
         model: def.model,
+        baseURL: def.baseURL,
+        disabled: def.disabled === true, // 被号主禁用（/ai 禁用api）：不参与挑选
         weight: Number.isFinite(def.weight) && def.weight > 0 ? def.weight : 1,
         client: new OpenAI({ [keyProp]: def[keyProp] || "not-needed", baseURL: def.baseURL }),
         counter: new DailyCounter(def.dailyLimit || 0),
@@ -43,11 +45,16 @@ export class ProviderPool {
     return this.entries.find((e) => e.name === name) || null;
   }
 
-  /** 当前可用的提供方（未超每日限额、不在冷却、且不在排除名单里）。 */
+  /** 当前可用的提供方（未被禁用、未超每日限额、不在冷却、且不在排除名单里）。 */
   available(exclude = new Set(), now = Date.now()) {
     return this.entries.filter(
-      (e) => !exclude.has(e.name) && e.cooldownUntil <= now && e.counter.canUse(new Date(now)),
+      (e) => !e.disabled && !exclude.has(e.name) && e.cooldownUntil <= now && e.counter.canUse(new Date(now)),
     );
+  }
+
+  /** 还在启用状态的提供方个数（禁用命令判断「是不是最后一个」用）。 */
+  enabledCount() {
+    return this.entries.filter((e) => !e.disabled).length;
   }
 
   /**
@@ -58,7 +65,7 @@ export class ProviderPool {
   pick(exclude = new Set(), preferred = null, now = Date.now()) {
     if (preferred) {
       const p = this.getByName(preferred);
-      if (p && !exclude.has(p.name) && p.cooldownUntil <= now && p.counter.canUse(new Date(now))) {
+      if (p && !p.disabled && !exclude.has(p.name) && p.cooldownUntil <= now && p.counter.canUse(new Date(now))) {
         return p;
       }
     }
@@ -88,24 +95,52 @@ export class ProviderPool {
 
   /**
    * 发起一次流式对话。onToken 每来一段文本就回调（完整累计文本），由调用方节流刷新消息。
+   * onUsage 可选：拿到流末尾的 usage（token 统计）时回调一次。
+   * 带 stream_options.include_usage 请求 usage；有的接口不认这个选项会直接报错——
+   * 只在「还没产出任何文本」时才去掉选项重试一次，绝不重复吐字。
    * @returns {Promise<string>} 完整回复文本
    */
-  async chat(entry, messages, onToken) {
-    const stream = await entry.client.chat.completions.create({
-      model: entry.model,
-      messages,
-      stream: true,
-    });
-    let full = "";
-    for await (const chunk of stream) {
-      const delta = chunk?.choices?.[0]?.delta?.content || "";
-      if (delta) {
-        full += delta;
-        if (onToken) onToken(full);
+  async chat(entry, messages, onToken, onUsage) {
+    const attempt = async (withUsageOption) => {
+      const params = { model: entry.model, messages, stream: true };
+      if (withUsageOption) params.stream_options = { include_usage: true };
+      const stream = await entry.client.chat.completions.create(params);
+      let full = "";
+      let produced = false;
+      let usage = null;
+      try {
+        for await (const chunk of stream) {
+          if (chunk && chunk.usage) usage = chunk.usage;
+          const delta = chunk?.choices?.[0]?.delta?.content || "";
+          if (delta) {
+            produced = true;
+            full += delta;
+            if (onToken) onToken(full);
+          }
+        }
+      } catch (err) {
+        // 已吐过字再断流不能重试（会重复发内容），把 produced 标记带出去让外层决定。
+        err.producedPartial = produced;
+        throw err;
       }
+      if (!full.trim()) throw new Error("模型返回了空内容");
+      if (usage && onUsage) {
+        try {
+          onUsage(usage);
+        } catch {
+          // 统计回调出错不影响回答本身。
+        }
+      }
+      return full;
+    };
+
+    try {
+      return await attempt(true);
+    } catch (err) {
+      if (err && err.producedPartial) throw err;
+      // 还没产出任何文本：多半是接口不认 stream_options，去掉选项重试一次。
+      return attempt(false);
     }
-    if (!full.trim()) throw new Error("模型返回了空内容");
-    return full;
   }
 
   /** 用量报告（号主命令用）。 */
@@ -114,7 +149,8 @@ export class ProviderPool {
       const s = e.counter.snapshot();
       const limitText = s.limit > 0 ? `${s.count}/${s.limit}` : `${s.count}/不限`;
       const cooling = e.cooldownUntil > Date.now() ? "（冷却中）" : "";
-      return `- ${e.name}（${e.model}）：今日 ${limitText}${cooling}`;
+      const off = e.disabled ? "（已禁用）" : "";
+      return `- ${e.name}（${e.model}）：今日 ${limitText}${cooling}${off}`;
     });
     return lines.join("\n");
   }
