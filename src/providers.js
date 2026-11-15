@@ -27,6 +27,7 @@ export class ProviderPool {
         name: def.name,
         model: def.model,
         baseURL: def.baseURL,
+        image: def.image === true, // 生图提供方（/ai 加生图api）：不进聊天池，只用来生图
         disabled: def.disabled === true, // 被号主禁用（/ai 禁用api）：不参与挑选
         weight: Number.isFinite(def.weight) && def.weight > 0 ? def.weight : 1,
         client: new OpenAI({ [keyProp]: def[keyProp] || "not-needed", baseURL: def.baseURL }),
@@ -45,16 +46,35 @@ export class ProviderPool {
     return this.entries.find((e) => e.name === name) || null;
   }
 
-  /** 当前可用的提供方（未被禁用、未超每日限额、不在冷却、且不在排除名单里）。 */
+  /** 当前可用的聊天提供方（未被禁用、不是生图提供方、未超每日限额、不在冷却、且不在排除名单里）。 */
   available(exclude = new Set(), now = Date.now()) {
     return this.entries.filter(
-      (e) => !e.disabled && !exclude.has(e.name) && e.cooldownUntil <= now && e.counter.canUse(new Date(now)),
+      (e) =>
+        !e.disabled &&
+        !e.image &&
+        !exclude.has(e.name) &&
+        e.cooldownUntil <= now &&
+        e.counter.canUse(new Date(now)),
     );
   }
 
-  /** 还在启用状态的提供方个数（禁用命令判断「是不是最后一个」用）。 */
+  /** 全部聊天提供方（不含生图提供方），含被禁用的（编号列表/选择用）。 */
+  chatEntries() {
+    return this.entries.filter((e) => !e.image);
+  }
+
+  /** 第一个可用的生图提供方（未禁用、未超限额、不在冷却）；没有返回 null。 */
+  firstImageProvider(now = Date.now()) {
+    return (
+      this.entries.find(
+        (e) => e.image && !e.disabled && e.cooldownUntil <= now && e.counter.canUse(new Date(now)),
+      ) || null
+    );
+  }
+
+  /** 还在启用状态的聊天提供方个数（禁用命令判断「是不是最后一个」用；生图提供方不算）。 */
   enabledCount() {
-    return this.entries.filter((e) => !e.disabled).length;
+    return this.entries.filter((e) => !e.disabled && !e.image).length;
   }
 
   /**
@@ -65,7 +85,14 @@ export class ProviderPool {
   pick(exclude = new Set(), preferred = null, now = Date.now()) {
     if (preferred) {
       const p = this.getByName(preferred);
-      if (p && !p.disabled && !exclude.has(p.name) && p.cooldownUntil <= now && p.counter.canUse(new Date(now))) {
+      if (
+        p &&
+        !p.disabled &&
+        !p.image &&
+        !exclude.has(p.name) &&
+        p.cooldownUntil <= now &&
+        p.counter.canUse(new Date(now))
+      ) {
         return p;
       }
     }
@@ -143,6 +170,25 @@ export class ProviderPool {
     }
   }
 
+  /**
+   * 识图调用：用条目的连接、以指定模型名发一次带图请求（非流式）。
+   * messages 里的 user 内容是 [{type:"text",...},{type:"image_url",...}] 形式。
+   * @returns {Promise<string>} 回复文本；usage 经 onUsage 回调带出（接口给的话）
+   */
+  async visionChat(entry, model, messages, onUsage) {
+    const res = await entry.client.chat.completions.create({ model, messages, stream: false });
+    const text = (res && res.choices && res.choices[0] && res.choices[0].message && res.choices[0].message.content) || "";
+    if (!String(text).trim()) throw new Error("识图模型返回了空内容");
+    if (res.usage && onUsage) {
+      try {
+        onUsage(res.usage);
+      } catch {
+        // 统计回调出错不影响回答本身。
+      }
+    }
+    return String(text);
+  }
+
   /** 用量报告（号主命令用）。 */
   usageReport() {
     const lines = this.entries.map((e) => {
@@ -150,7 +196,8 @@ export class ProviderPool {
       const limitText = s.limit > 0 ? `${s.count}/${s.limit}` : `${s.count}/不限`;
       const cooling = e.cooldownUntil > Date.now() ? "（冷却中）" : "";
       const off = e.disabled ? "（已禁用）" : "";
-      return `- ${e.name}（${e.model}）：今日 ${limitText}${cooling}${off}`;
+      const img = e.image ? "（生图）" : "";
+      return `- ${e.name}（${e.model}）：今日 ${limitText}${cooling}${off}${img}`;
     });
     return lines.join("\n");
   }
