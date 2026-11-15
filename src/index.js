@@ -12,6 +12,7 @@ import { ConversationStore } from "./context.js";
 import { Notebook } from "./notebook.js";
 import { UserProfiles } from "./profiles.js";
 import { RuntimeState } from "./state.js";
+import { UsageStats } from "./usagestats.js";
 import { createHandler } from "./handlers.js";
 import { startNameClock } from "./nameclock.js";
 
@@ -45,7 +46,22 @@ async function main() {
   }
   const effectiveConfig = { ...config, myUsername: username };
 
-  const pool = new ProviderPool(effectiveConfig.providers, logger);
+  // 可重载运行时：config 与 pool 放在可替换的盒子里。号主命令改完 config.json 后
+  // 调 reloadRuntime()，这里重新 loadConfig 并重建提供方池，handlers 换上新引用，
+  // 改动立即生效不用重启（记事本后台整理等用 pool 的地方走的也是 handlers 内的引用）。
+  const runtime = {
+    config: effectiveConfig,
+    pool: new ProviderPool(effectiveConfig.providers, logger),
+  };
+  function reloadRuntime() {
+    const fresh = loadConfig();
+    const eff = { ...fresh, myUsername: username };
+    runtime.config = eff;
+    runtime.pool = new ProviderPool(eff.providers, logger);
+    logger.info("配置已重载（提供方池已重建，改动立即生效）");
+    return { config: runtime.config, pool: runtime.pool };
+  }
+
   const store = new ConversationStore(effectiveConfig.contextSize);
   // 记事本与用户档案落盘在运行目录，重启不丢；botNames 让记事本过滤「以机器人为主语」的条目。
   const notebook = new Notebook(path.resolve("facts.json"), {
@@ -57,14 +73,20 @@ async function main() {
   if (state.isPaused()) {
     logger.warn("当前处于全局关闭状态（state.json 记录了 paused），只响应号主命令；发 /ai 开启 恢复回复。");
   }
+  // Token 用量统计落盘在 usage.json：按天按模型累计，跨天归零。
+  const usageStats = new UsageStats(path.resolve("usage.json"));
   const handler = createHandler({
     client,
-    config: effectiveConfig,
-    pool,
+    config: runtime.config,
+    pool: runtime.pool,
+    getConfig: () => runtime.config,
+    getPool: () => runtime.pool,
+    reloadRuntime,
     store,
     notebook,
     profiles,
     state,
+    usageStats,
     logger,
     startedAt: Date.now(),
     selfId: String(me.id),
