@@ -62,26 +62,26 @@ test("触发词单独出现时问题为空字符串", () => {
   assert.equal(r.question, "");
 });
 
-test("号主命令解析", () => {
-  assert.equal(parseOwnerCommand("@ai 状态"), "状态");
-  assert.equal(parseOwnerCommand("@ai 拉黑 12345"), "拉黑 12345");
-  assert.equal(parseOwnerCommand("@ai"), null);
-  assert.equal(parseOwnerCommand("状态"), null);
-  assert.equal(parseOwnerCommand("@ab 状态"), null);
-});
-
-test("号主命令双前缀：/ai 也认", () => {
+test("号主命令解析：只认 /ai 前缀", () => {
   assert.equal(parseOwnerCommand("/ai 状态"), "状态");
   assert.equal(parseOwnerCommand("/ai 帮助"), "帮助");
   assert.equal(parseOwnerCommand("/ai 拉黑 12345"), "拉黑 12345");
   assert.equal(parseOwnerCommand("/ai"), null);
   assert.equal(parseOwnerCommand("/ai "), null);
-  assert.equal(parseOwnerCommand("/ab 状态"), null);
-  assert.equal(parseOwnerCommand(" /ai 状态"), null);
   assert.equal(parseOwnerCommand("/ai状态"), null);
+  assert.equal(parseOwnerCommand(" /ai 状态"), null);
+  assert.equal(parseOwnerCommand("状态"), null);
   assert.equal(parseOwnerCommand("你好"), null);
   assert.equal(parseOwnerCommand(""), null);
   assert.equal(parseOwnerCommand(null), null);
+});
+
+test("号主命令解析：@ai 是聊天触发词、不是命令前缀，一律不认", () => {
+  assert.equal(parseOwnerCommand("@ai 状态"), null);
+  assert.equal(parseOwnerCommand("@ai 帮助"), null);
+  assert.equal(parseOwnerCommand("@ai 关闭"), null);
+  assert.equal(parseOwnerCommand("@ai"), null);
+  assert.equal(parseOwnerCommand("@ab 状态"), null);
 });
 
 test("帮助类问题判定：恰好是帮助写法才算", () => {
