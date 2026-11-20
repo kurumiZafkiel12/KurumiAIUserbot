@@ -20,7 +20,6 @@ import { UserProfiles, extractCallName} from "./profiles.js";
 import {
 canRunOwnerCommand,
 canUsePrivateChat,
-identityVerdict,
 isOwner,
 ownerNote,
 describeRole,
@@ -2098,15 +2097,6 @@ return out;
         return;
       }
 
-      // 认主拦截：「我是你主人吗」类问题由程序按 ID 核验直接给结论，不走模型
-      // （走模型实测会打太极，主人本人问也被回话术；结论只给是/不是，绝不带 ID）。
-      if (!photoSource) {
-        const verdict = identityVerdict(parsed.question, senderId, permConfig());
-        if (verdict) {
-          await reply(msg, verdict);
-          return;
-        }
-      }
 
       // 公开命令：@我 后发 /ai 账单、/ai 模型、/ai 人设，任何人可用、不走模型。
       if (!photoSource && (await handlePublicQuery(msg, parsed.question))) {
