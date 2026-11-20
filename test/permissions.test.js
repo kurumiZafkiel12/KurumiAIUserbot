@@ -10,7 +10,6 @@ import {
   canUsePrivateChat,
   ownerNote,
   describeRole,
-  identityVerdict,
   shouldPauseBlock,
   speakerAssertion,
 } from "../src/permissions.js";
@@ -78,29 +77,6 @@ test("ownerNote：只给核验口径、绝不带创建者 ID；没配 ownerId �
   assert.equal(ownerNote({}), null);
 });
 
-test("identityVerdict：主人本人问「我是你主人吗」直接承认", () => {
-  for (const q of ["我是你主人吗", "我是你的主人吗？", "我是不是你主人", "你的主人是我吗", "我是你创建者吗"]) {
-    const v = identityVerdict(q, "111", CFG);
-    assert.ok(v && v.startsWith("是的"), `应命中并承认：${q} → ${v}`);
-    assert.ok(!v.includes("111"));
-  }
-});
-
-test("identityVerdict：管理员与普通用户问同样的话，结论不同且不带 ID", () => {
-  const admin = identityVerdict("我是你主人吗", "222", CFG);
-  assert.ok(admin && admin.includes("管理员") && admin.startsWith("不是"));
-  const user = identityVerdict("我是你主人吗", "999", CFG);
-  assert.ok(user && user.startsWith("不是"));
-  for (const v of [admin, user]) assert.ok(!v.includes("111") && !v.includes("222") && !v.includes("999"));
-});
-
-test("identityVerdict：问第三人、闲聊与长文本不命中（照常走模型）", () => {
-  for (const q of ["我的主人是谁", "你主人是谁", "他是不是你主人", "今天天气怎么样", "我想成为你的主人", "主人今天吃什么"]) {
-    assert.equal(identityVerdict(q, "999", CFG), null, `不应命中：${q}`);
-  }
-  assert.equal(identityVerdict("", "111", CFG), null);
-  assert.equal(identityVerdict("我是你主人吗".repeat(10), "111", CFG), null);
-});
 
 test("describeRole：创建者/管理员有标注，普通用户返回 null", () => {
   assert.match(describeRole("111", CFG), /创建者本人/);
@@ -125,6 +101,7 @@ test("speakerAssertion：三档各给结论，且绝不带任何数字 ID", () =
   const owner = speakerAssertion("111", CFG);
   assert.ok(owner.startsWith("【本轮发言者】"));
   assert.ok(owner.includes("主人本人"));
+  assert.ok(owner.includes("直接承认"), "主人档须明确要求被问认主时直接承认");
   const admin = speakerAssertion("222", CFG);
   assert.ok(admin.includes("管理员"));
   const user = speakerAssertion("999", CFG);
