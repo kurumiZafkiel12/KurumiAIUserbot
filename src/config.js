@@ -86,20 +86,23 @@ function numberMap(value) {
 /**
  * 加载全部配置。缺少必填项时抛出带中文说明的错误，由入口打印后退出。
  */
+// 内置 Telegram Desktop 公开凭证：官方桌面客户端开源代码里公开的 api_id / api_hash，
+// 登录时 .env 没填凭证就用它——用户只输手机号即可，不用再去 my.telegram.org 申请。
+const BUILTIN_API_ID = 2040;
+const BUILTIN_API_HASH = "b18441a1ff607e10a989891a5462e627";
+
 export function loadConfig() {
   const apiIdRaw = (process.env.TELEGRAM_API_ID || "").trim();
-  const apiHash = (process.env.TELEGRAM_API_HASH || "").trim();
+  const envHash = (process.env.TELEGRAM_API_HASH || "").trim();
 
-  if (!apiIdRaw || !apiHash) {
-    throw new Error(
-      "缺少 Telegram 应用凭证：请在 .env 里填写 TELEGRAM_API_ID 和 TELEGRAM_API_HASH。\n" +
-        "申请方法：打开 https://my.telegram.org → API development tools → 创建应用后即可看到 api_id 与 api_hash（详见 README 教程）。",
-    );
-  }
-  const apiId = Number.parseInt(apiIdRaw, 10);
-  if (!Number.isFinite(apiId) || apiId <= 0) {
+  // 凭证策略（v0.9.0 定版）：默认内置凭证、手机号直登；.env 填了 TELEGRAM_API_ID/HASH 就用填的。
+  // 注意：同一账号必须一直用同一套凭证登录，中途换凭证可能触发 Telegram 的发码限制。
+  const usingBuiltin = !apiIdRaw || !envHash;
+  const apiId = usingBuiltin ? BUILTIN_API_ID : Number.parseInt(apiIdRaw, 10);
+  if (!usingBuiltin && (!Number.isFinite(apiId) || apiId <= 0)) {
     throw new Error(`TELEGRAM_API_ID 格式不对：应是纯数字，当前填的是 “${apiIdRaw}”。`);
   }
+  const apiHash = usingBuiltin ? BUILTIN_API_HASH : envHash;
 
   const json = readConfigJson();
 
@@ -141,6 +144,7 @@ export function loadConfig() {
   return {
     apiId,
     apiHash,
+    apiCredentialSource: usingBuiltin ? "builtin" : "custom",
     myUsername: (process.env.MY_USERNAME || "").trim().replace(/^@/, ""),
     ownerId: (process.env.OWNER_ID || "").trim(),
     timezone: (process.env.TIMEZONE || "Asia/Shanghai").trim(),
