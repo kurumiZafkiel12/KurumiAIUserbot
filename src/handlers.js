@@ -182,7 +182,7 @@ export const PUBLIC_HELP_TEXT = `使用帮助：
 
 想让我做点什么，直接说就行。`;
 
-const CONSOLIDATE_EVERY = 8; // 每会话每答满 N 次，后台自动整理一次记事本与印象
+const CONSOLIDATE_EVERY = 4; // 每会话每答满 N 次，后台自动整理一次记事本与印象（v0.7.1 由 8 降为 4，号主拍板：记忆攒得快更重要）
 
 /** 一条消息有没有带照片（GramJS 的 Message.photo 或 media 里的 photo）。 */
 function msgHasPhoto(m) {
