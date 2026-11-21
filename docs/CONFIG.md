@@ -58,7 +58,7 @@
   "recordGroups": [],
   "recordContextLimit": {},
   "searchApiKey": "",
-  "customName": { "first": "", "last": "" }
+  "customName": { "first": "" }
 }
 ```
 
@@ -192,7 +192,7 @@ recordGroups 是开启了聊天记录的群 ID 列表（`/ai 开启记录`）；
 
 ### customName（对象，可选，程序也会维护）
 
-`/ai 改名` 落盘的账号名 `{ "first": 名字, "last": 姓氏 }`。设了之后，名字时钟的显示名用它打头（姓氏 + 时间）替代 .env 的 NAME_PREFIX；没设时维持原前缀逻辑。
+`/ai 改名` 落盘的账号名 `{ "first": 名字 }`，只存打头的名字。号主定版：姓氏位只能是名字时钟的时间，不设自定义姓氏（旧配置里的 `last` 会被忽略）。设了之后，名字时钟的显示名用它打头（名字 + 时间）替代 .env 的 NAME_PREFIX；没设时维持原前缀逻辑。
 
 ## 最小示例：只加一个备用模型
 
