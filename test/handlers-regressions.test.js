@@ -606,3 +606,33 @@ test("v0.8.3 只 @ 不说话：走模型用人设接话，不发固定提示句"
   assert.ok(!visible.includes("把问题和"), "绝不能再发脚本味的固定提示句");
   assert.ok(visible.includes("在呢"), "应发模型的人设回答");
 });
+
+// ================= v0.8.6：匿名发言（马甲用户）不回复修复 =================
+
+test("v0.8.6 匿名发言：群里无 senderId 的消息回复机器人时应触发回答", async () => {
+  const f = fixture();
+  const botMsg = { id: 5, senderId: "9999", message: "2 呀" };
+  await f.handler(f.event("1-2-3+4/5-6=?", { group: true, sender: null, reply: botMsg }));
+  assert.ok(f.modelCalls.length >= 1, "匿名者回复机器人消息应进模型");
+  assert.ok(f.sends.length >= 1 || f.edits.length >= 1, "应发出回答");
+});
+
+test("v0.8.6 匿名发言：私聊无 senderId 仍丢弃（私聊没有匿名）", async () => {
+  const f = fixture();
+  await f.handler(f.event("你好", { sender: null }));
+  assert.equal(f.modelCalls.length, 0);
+});
+
+test("v0.8.7 匿名发言按签名区分：不同签名各一份上下文，无签名不串到签名名下", async () => {
+  const f = fixture();
+  const botMsg = { id: 5, senderId: "9999", message: "2 呀" };
+  const ev1 = f.event("问题一", { group: true, sender: null, reply: botMsg });
+  ev1.message.postAuthor = "姥爷";
+  await f.handler(ev1);
+  const ev2 = f.event("问题二", { group: true, sender: null, reply: botMsg });
+  ev2.message.postAuthor = "另一位管理";
+  await f.handler(ev2);
+  assert.ok(f.store.get("-100777", "anon:-100777:姥爷").length >= 1, "签名「姥爷」应有独立上下文");
+  assert.ok(f.store.get("-100777", "anon:-100777:另一位管理").length >= 1, "另一签名应有独立上下文");
+  assert.equal(f.store.get("-100777", "anon:-100777").length, 0, "带签名的不应落进无签名共用身份");
+});
