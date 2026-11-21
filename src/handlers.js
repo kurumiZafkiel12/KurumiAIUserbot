@@ -49,7 +49,7 @@ import { buildTtsRequest, pickVoiceName, cleanSpeechText, parseVoiceSwitch, voic
 import { isImageGenRequest, extractImagePrompt, buildImageGenRequest, parseImageGenResponse} from "./imagegen.js";
 import { decideSplit} from "./split.js";
 import { composeClockName, currentHHMM} from "./nameclock.js";
-import { toolGate, TOOLS_PROMPT_NOTE } from "./tools.js";
+import { toolGate, TOOLS_PROMPT_NOTE, executeTool, extractTextToolCalls, stripTextToolCalls } from "./tools.js";
 import { chatWithTools } from "./toolchat.js";
 import { ToolStore } from "./toolstore.js";
 import { synthesizeEdgeTts, EDGE_DEFAULT_VOICE } from "./edgetts.js";
@@ -221,6 +221,33 @@ return false;
 */
 export function createHandler(deps) {
 const { client, store, logger, startedAt} = deps;
+
+// 实体缓存预热：新会话第一次给某个私聊对象发消息时，GramJS 只凭 PeerUser（无 accessHash）
+// 解析不出 input entity，会报 "Could not find the input entity"（私聊消息走 UpdateShortMessage、
+// 不带完整实体，缓存里没有）。拉一次会话列表可把已有对话的实体灌进缓存。
+let entityWarmPromise = null;
+function warmEntities() {
+  if (!entityWarmPromise) {
+    entityWarmPromise = Promise.resolve()
+      .then(() => client.getDialogs())
+      .catch(() => {})
+      .finally(() => {
+        entityWarmPromise = null;
+      });
+  }
+  return entityWarmPromise;
+}
+
+/** 发消息到某个 peer；遇到实体未缓存先预热再重试一次，其余错误照常抛出。 */
+async function sendToPeer(peer, params) {
+  try {
+    return await client.sendMessage(peer, params);
+  } catch (err) {
+    if (!/Could not find the input entity/.test((err && err.message) || "")) throw err;
+    await warmEntities();
+    return client.sendMessage(peer, params);
+  }
+}
 let config = deps.config;
 let pool = deps.pool;
 const selfId = deps.selfId!== undefined && deps.selfId!== null? String(deps.selfId): "";
@@ -299,7 +326,7 @@ return [new Api.MessageEntityBlockquote({ offset: 0, length: text.length, collap
 }
 
 async function reply(msg, text) {
-await client.sendMessage(msg.peerId, { message: text, replyTo: msg.id, formattingEntities: quoteEntitiesFor(text) });
+await sendToPeer(msg.peerId, { message: text, replyTo: msg.id, formattingEntities: quoteEntitiesFor(text) });
 recentSentTexts.push(String(text).trim());
 if (recentSentTexts.length > 30) recentSentTexts.shift();
 }
@@ -1554,7 +1581,7 @@ return out;
       while (restText.length > 0) {
         const chunk = restText.slice(0, TG_MESSAGE_LIMIT);
         restText = restText.slice(TG_MESSAGE_LIMIT);
-        await client.sendMessage(msg.peerId, { message: chunk, replyTo: msg.id });
+        await sendToPeer(msg.peerId, { message: chunk, replyTo: msg.id });
       }
       return;
     }
@@ -1569,7 +1596,7 @@ return out;
       while (restPart.length > 0) {
         const chunk = restPart.slice(0, TG_MESSAGE_LIMIT);
         restPart = restPart.slice(TG_MESSAGE_LIMIT);
-        await client.sendMessage(msg.peerId, { message: chunk, replyTo: msg.id });
+        await sendToPeer(msg.peerId, { message: chunk, replyTo: msg.id });
       }
     }
   }
@@ -1644,7 +1671,7 @@ return out;
   /** 发占位消息；发不出去返回 null（调用方记日志收尾）。 */
   async function sendPlaceholder(msg, chatId) {
     try {
-      return await client.sendMessage(msg.peerId, { message: PLACEHOLDER_TEXT, replyTo: msg.id });
+      return await sendToPeer(msg.peerId, { message: PLACEHOLDER_TEXT, replyTo: msg.id });
     } catch (err) {
       logger.error(`发送占位消息失败（chat=${chatId}）：${err.message}`);
       return null;
@@ -1843,8 +1870,9 @@ return out;
 
   async function handleChat(msg, chatId, senderId, speakerName, parsed) {
     if (!parsed.question) {
-      await reply(msg, "把问题和 @ 一起发出来，例如：@我 今天天气怎么样");
-      return;
+      // 只 @ 不说话（光喊一声）：不回脚本味的固定提示句——按号主定版（v0.6.6 起会话类
+      // 不发罐头回复），替成一句「在吗」当问题走模型，让它用人设自然接话。
+      parsed = { ...parsed, question: "在吗" };
     }
     // 普通用户冷却：间隔太短的提问直接忽略，防止刷屏烧额度。
     if (isCoolingDown(senderId)) return;
@@ -1981,6 +2009,49 @@ return out;
         logger.error(`发送失败提示出错：${err.message}`);
       }
       return;
+    }
+
+    // 文本工具调用抢救：有的提供方会把工具调用写成 <tool_call>{...}</tool_call> 文本而不是原生
+    // function call（工具门没命中、走普通聊天时尤其容易，如接上文报出城市名）。原样发出去会把标记
+    // 怼到用户脸上：这里识别出来真执行，再让模型拿结果重答一次；重答还带标记就剥掉标记，
+    // 最差也只发工具原文结果，绝不发标记本身。
+    {
+      const leaked = extractTextToolCalls(answer);
+      if (leaked.length > 0 && usedEntry) {
+        const toolCtx = { chatId, senderId, timezone: config.timezone, logger, outbox: toolOutbox, store: toolStore };
+        const resultLines = [];
+        for (const call of leaked) {
+          try {
+            resultLines.push(await executeTool(call.name, call.args, toolCtx));
+          } catch (err) {
+            resultLines.push(`工具 ${call.name} 执行失败：${err.message}`);
+          }
+        }
+        let rescued = null;
+        try {
+          rescued = await pool.chat(
+            usedEntry,
+            [
+              ...messages,
+              {
+                role: "user",
+                content: `【工具执行结果】\n${resultLines.join("\n")}\n请根据以上结果直接回答我最初的问题，不要再输出 <tool_call> 标记或 JSON。`,
+              },
+            ],
+            () => {},
+            (u) => usageStats.record(usedEntry.model, u),
+          );
+        } catch (err) {
+          logger.error(`工具结果重答失败：${err.message}`);
+        }
+        if (rescued && extractTextToolCalls(rescued).length === 0) {
+          answer = rescued;
+        } else if (rescued) {
+          answer = stripTextToolCalls(rescued) || resultLines.join("\n");
+        } else {
+          answer = resultLines.join("\n");
+        }
+      }
     }
 
     // 出口脱敏：最终回复与存入上下文的文本都先过滤（配置 key 逐字打码 + sk- 长串打码），
