@@ -127,3 +127,16 @@ test("版本号：只有实际变更才 +1，清空不存在的记事本不算�
   assert.equal(nb.version("c1"), 4, "清空空记事本不算变更");
   assert.equal(nb.version("别的会话"), 0, "版本按会话独立");
 });
+
+test("parseConsolidationSections：双段拆分、旧格式兼容、（空）跳过", async () => {
+  const { parseConsolidationSections } = await import("../src/notebook.js");
+  const two = parseConsolidationSections("【会话记事本】\n- 群里聊游戏\n【用户记事本】\n- 小明：很有钱");
+  assert.deepEqual(two.chatLines, ["- 群里聊游戏"]);
+  assert.deepEqual(two.userLines, ["- 小明：很有钱"]);
+  const legacy = parseConsolidationSections("- 旧格式事实一\n- 旧格式事实二");
+  assert.deepEqual(legacy.chatLines, ["- 旧格式事实一", "- 旧格式事实二"]);
+  assert.deepEqual(legacy.userLines, []);
+  const empty = parseConsolidationSections("【会话记事本】\n（空）\n【用户记事本】\n（空）");
+  assert.deepEqual(empty.chatLines, []);
+  assert.deepEqual(empty.userLines, []);
+});
