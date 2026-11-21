@@ -553,3 +553,21 @@ test("v0.7.1 短回复不带引用实体；超长单条答案的最终编辑带�
   const quoted = g.edits.filter((e) => (e.formattingEntities || []).some((x) => x.collapsed === true));
   assert.ok(quoted.length >= 1, "超长答案的最终编辑应带 collapsed 引用实体");
 });
+
+// ================= v0.7.2：访客名单（私聊门禁放行） =================
+
+test("v0.7.2 访客：门禁 admins 时先拦、加访客后放行、删访客再拦", async () => {
+  const f = fixture({ config: { privateChat: "admins" } });
+  await f.handler(f.event("你好", { sender: "999" }));
+  assert.equal(f.modelCalls.length, 0, "未加访客前私聊应被门禁拦下");
+  await f.handler(f.event("/ai 加访客 999"));
+  assert.ok(f.sends.some((s) => s.message.includes("已添加访客 999")));
+  await f.handler(f.event("你好", { sender: "999" }));
+  assert.equal(f.modelCalls.length, 1, "加访客后私聊应放行到模型");
+  await f.handler(f.event("/ai 访客列表"));
+  assert.ok(f.sends.some((s) => s.message.includes("访客名单") && s.message.includes("999")));
+  await f.handler(f.event("/ai 删访客 999"));
+  const calls = f.modelCalls.length;
+  await f.handler(f.event("你好", { sender: "999" }));
+  assert.equal(f.modelCalls.length, calls, "删访客后私聊应再次被拦");
+});
