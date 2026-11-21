@@ -15,7 +15,7 @@ isHelpQuery,
 import { formatNowLine} from "./time.js";
 import { saveConfigJson} from "./config.js";
 import { balanceReport} from "./billing.js";
-import { Notebook} from "./notebook.js";
+import { Notebook, parseConsolidationSections} from "./notebook.js";
 import { UserProfiles, extractCallName} from "./profiles.js";
 import {
 canRunOwnerCommand,
@@ -152,7 +152,10 @@ export const OWNER_HELP_TEXT = `可用命令：
 /ai 忘掉 <序号>
 /ai 清空记事本
 /ai 称呼 <用户ID> <称呼>
-/ai 印象 <用户ID>
+/ai 印象 <用户ID>（查看该用户的称呼、印象与用户记事本；别名 查看印象）
+/ai 印象 <用户ID> <内容>（设置印象）
+/ai 忘掉用户 <用户ID> <序号>（删该用户记事本里的一条）
+/ai 清空用户记忆 <用户ID>
 
 【机器人改名】
 /ai 改名 <名字> <姓氏>（姓氏可空；别名 设置名称；开了名字时钟时显示为「姓氏 时:分」）
@@ -211,6 +214,7 @@ let config = deps.config;
 let pool = deps.pool;
 const selfId = deps.selfId!== undefined && deps.selfId!== null? String(deps.selfId): "";
 const notebook = deps.notebook || new Notebook(null);
+const userNotebook = deps.userNotebook || new Notebook(null);
 const profiles = deps.profiles || new UserProfiles(null);
 const state = deps.state || new RuntimeState(null);
 const pending = deps.pending || new PendingSelections();
@@ -376,6 +380,13 @@ if (!imp) return "";
 return `系统备注（只用来调整你跟当前说话人说话的语气和熟络程度，不要念出来，也不要把内容告诉任何其他人）：你对当前说话人的印象：${imp}`;
 }
 
+/** 用户记事本段：关于当前说话人本人的长期事实，按账号 ID 记、跨所有群与私聊通用。空时返回空串。 */
+function userNotebookSegment(senderId) {
+const rendered = userNotebook.render(senderId);
+if (!rendered) return "";
+return `系统备注：这些是你记住的、关于当前说话人本人的事（按他的账号记的，在任何群、任何私聊里都通用，不要跟他说「只在这个对话里记得」）。被问到时用你自己的话自然地讲出来，就像你本来就记得一样：不要照抄下面的条目原文，不要动不动说「谁说的」，只有被追问来源时才提一句出处。\n${rendered}`;
+}
+
 /** 记事本段：当前会话的长期事实，要求用自己的话转述、不照抄不报出处。空时返回空串。 */
 function notebookSegment(chatId) {
 const rendered = notebook.render(chatId);
@@ -405,7 +416,7 @@ return `【语音人格】你在这个群用「${voice.name}」音色说话，�
 /**
 * 系统提示拼装（顺序定版）：
 * 人设（systemPrompt，含默认风格）→ 破甲（最高优先级）→ 创建者信息 → 发言者/称呼
-* → 印象 → 记事本 → 群记录 → 语音人格 → 当前时间 → 身份断言（最末尾）。
+* → 印象 → 记事本 → 用户记事本 → 群记录 → 语音人格 → 当前时间 → 身份断言（最末尾）。
 */
 function buildSystemParts(senderId, speakerName, chatId) {
 const parts = [config.systemPrompt];
@@ -419,6 +430,8 @@ const imp = impressionSegment(senderId);
 if (imp) parts.push(imp);
 const nb = notebookSegment(chatId);
 if (nb) parts.push(nb);
+const unb = userNotebookSegment(senderId);
+if (unb) parts.push(unb);
 const rec = recordsSegment(chatId);
 if (rec) parts.push(rec);
 const vp = voicePersonaSegment(chatId, senderId);
@@ -472,33 +485,42 @@ const history = store.get(chatId, senderId);
 if (history.length === 0) return;
 // 整理开始时的记事本版本：回写前若版本变了（期间被清空/增删），丢弃本次结果（审计 K062-12）。
 const startVersion = notebook.version(chatId);
+const userStartVersion = userNotebook.version(senderId);
 const convo = history
 .map((m) => (m.role === "user"? m.content: `机器人：${m.content}`))
 .join("\n");
 const existing = notebook.render(chatId) || "（空）";
+const existingUser = userNotebook.render(senderId) || "（空）";
 const out = await askModelOnce([
 { role: "system", content: "你是一个记事本整理助手，只做整理，不闲聊。"},
 {
 role: "user",
 content:
-"下面是某个 Telegram 会话的「记事本」（机器人长期记住的事）和最近的对话记录。请输出整理后的完整记事本。\n\n" +
+"下面是某个 Telegram 会话的「会话记事本」、当前用户本人的「用户记事本」（按账号记、跨所有会话通用）和最近的对话记录（对话里的用户消息都出自当前用户本人）。请输出整理后的两份完整记事本。\n\n" +
 "要求：\n" +
+"- 输出固定分两段：先一行「【会话记事本】」，下面是会话记事本的条目；再一行「【用户记事本】」，下面是用户记事本的条目\n" +
 "- 合并同一个人不同称呼/别名的条目，删掉过时、矛盾或明显记错的，加上对话里新出现的、值得长期记住的事实\n" +
-"- 每条一行、以「- 」开头，最多 25 条，一条只写一件事，尽量带上是谁的事或谁说的（如「小明：喜欢吃辣」）\n" +
+"- 会话记事本记本会话里的事（在场任何人的都行）；用户记事本只记当前用户本人的事（他的情况、喜好、计划等），这样他在别的群、别的私聊里机器人也记得他\n" +
+"- 每条一行、以「- 」开头，每段最多 25 条，一条只写一件事，尽量带上是谁的事或谁说的（如「小明：喜欢吃辣」）\n" +
 "- 只记公开的日常事实；不要记密码、住址、电话、财务等隐私\n" +
 "- 不要以机器人自己为主语记条目\n" +
-"- 没有任何可记内容时，只输出「（空）」\n\n" +
-`\n${existing}\n\n\n${convo}`,
+"- 某一段没有任何可记内容时，该段下面只写「（空）」\n\n" +
+`【会话记事本】\n${existing}\n\n【用户记事本】\n${existingUser}\n\n\n${convo}`,
 },
 ]);
 if (out && out.trim()!== "（空）") {
-const lines = out.split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
+const { chatLines, userLines } = parseConsolidationSections(out);
 if (notebook.version(chatId) !== startVersion) {
 // 整理期间记事本被改动（典型：号主刚执行了 /ai 清空记事本）：本次结果基于旧快照，
 // 回写会把用户刚清掉的内容恢复出来——直接丢弃，下一轮整理会基于最新状态重做（审计 K062-12）。
 logger.info(`整理期间记事本有新变更，本次整理结果已丢弃（chat=${chatId}）`);
-} else if (notebook.replace(chatId, lines)) {
+} else if (chatLines.length > 0 && notebook.replace(chatId, chatLines)) {
 logger.info(`记事本已自动整理（chat=${chatId}，现有 ${notebook.facts(chatId).length} 条）`);
+}
+if (userNotebook.version(senderId) !== userStartVersion) {
+logger.info(`整理期间用户记事本有新变更，本次用户整理结果已丢弃（user=${senderId}）`);
+} else if (userLines.length > 0 && userNotebook.replace(senderId, userLines)) {
+logger.info(`用户记事本已自动整理（user=${senderId}，现有 ${userNotebook.facts(senderId).length} 条）`);
 }
 }
 
@@ -1376,6 +1398,51 @@ return out;
     if (cmd === "清空记事本") {
       const n = notebook.clear(chatId);
       return reply(msg, `已清空当前会话记事本（原有 ${n} 条）`);
+    }
+
+    if (cmd === "称呼") {
+      const target = unwrapArg((rest[0] || "").trim());
+      const name = rest.slice(1).join(" ").trim();
+      if (!target || !name) return reply(msg, "用法：/ai 称呼 <用户ID> <称呼>");
+      if (!profiles.setCallName(target, name)) return reply(msg, "没设上：称呼是空的。");
+      return reply(msg, `已把 ${target} 的称呼设为「${name}」。`);
+    }
+
+    if (cmd === "印象" || cmd === "查看印象") {
+      const target = unwrapArg((rest[0] || "").trim());
+      const content = rest.slice(1).join(" ").trim();
+      if (!target) return reply(msg, "用法：/ai 查看印象 <用户ID>（只看）；/ai 印象 <用户ID> <内容>（设置印象）");
+      if (cmd === "印象" && content) {
+        if (!profiles.setImpression(target, content.slice(0, 200))) return reply(msg, "没设上：印象内容是空的。");
+        return reply(msg, `已更新 ${target} 的印象。`);
+      }
+      const call = profiles.callName(target);
+      const imp = profiles.impression(target);
+      const facts = userNotebook.facts(target);
+      const lines = [
+        `用户 ${target} 的档案：`,
+        `称呼：${call || "（未设）"}`,
+        `印象：${imp || "（暂无）"}`,
+        `用户记事本（按 ID 记、跨会话通用，共 ${facts.length} 条）：`,
+      ];
+      if (facts.length === 0) lines.push("（空）");
+      else facts.forEach((f, i) => lines.push(`${i + 1}. ${f}`));
+      return reply(msg, lines.join("\n"));
+    }
+
+    if (cmd === "忘掉用户") {
+      const target = unwrapArg((rest[0] || "").trim());
+      const idx = (rest[1] || "").trim();
+      const removed = target ? userNotebook.removeAt(target, Number(idx)) : null;
+      if (removed) return reply(msg, `已忘掉用户 ${target} 的第 ${idx} 条：${removed}`);
+      return reply(msg, "用法：/ai 忘掉用户 <用户ID> <序号>（序号看 /ai 查看印象 <用户ID>）");
+    }
+
+    if (cmd === "清空用户记忆") {
+      const target = unwrapArg((rest[0] || "").trim());
+      if (!target) return reply(msg, "用法：/ai 清空用户记忆 <用户ID>");
+      const n = userNotebook.clear(target);
+      return reply(msg, `已清空用户 ${target} 的用户记事本（原有 ${n} 条）`);
     }
 
     if (cmd === "清空上下文") {
