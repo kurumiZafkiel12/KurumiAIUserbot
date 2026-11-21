@@ -95,3 +95,19 @@ test("UserProfiles 持久化：写盘后新实例能读回；文件损坏不崩"
   assert.equal(p3.callName("111"), "重建也能存");
   fs.rmSync(dir, { recursive: true, force: true });
 });
+
+test("sanitizeImpression：清单式文本作废、包裹剥除、正常印象原样", async () => {
+  const { sanitizeImpression } = await import("../src/profiles.js");
+  assert.equal(sanitizeImpression("说话直，爱下命令，嘴硬心软"), "说话直，爱下命令，嘴硬心软");
+  assert.equal(sanitizeImpression("<1. 狂三：常自称穷。 2. 狂三：被评价说话直。 3. 狂三：被评价爱面子。>"), "");
+  assert.equal(sanitizeImpression("1. 狂三：常自称穷\n2. 狂三：说话直"), "");
+  assert.equal(sanitizeImpression("「夜猫子，常聊 VPS」"), "夜猫子，常聊 VPS");
+  assert.equal(sanitizeImpression(""), "");
+});
+
+test("setImpression：清单式印象拒收，旧印象保留", () => {
+  const p = new UserProfiles(null);
+  p.setImpression("111", "爱开玩笑");
+  assert.equal(p.setImpression("111", "<1. 甲：事实一。 2. 甲：事实二。>"), false);
+  assert.equal(p.impression("111"), "爱开玩笑");
+});
