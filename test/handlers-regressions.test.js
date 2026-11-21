@@ -571,3 +571,38 @@ test("v0.7.2 访客：门禁 admins 时先拦、加访客后放行、删访客�
   await f.handler(f.event("你好", { sender: "999" }));
   assert.equal(f.modelCalls.length, calls, "删访客后私聊应再次被拦");
 });
+
+// ================= v0.8.2：文本工具调用抢救 =================
+
+test("v0.8.2 抢救：普通聊天里模型把工具调用写成 <tool_call> 文本时，真执行并重答、不发标记", async () => {
+  const MARKUP = '<tool_call>{"name": "flip_coin", "arguments": {"times": 1}}</tool_call>';
+  const f = fixture({
+    model: (params, idx) => {
+      if (params.stream) {
+        const text = idx === 1 ? MARKUP : "抛出来了，结果是正面。";
+        return (async function* () {
+          yield { choices: [{ delta: { content: text } }] };
+        })();
+      }
+      return { choices: [{ message: { content: "非流式回答" } }] };
+    },
+  });
+  await f.handler(f.event("@mybot 随便聊聊", { group: true, chat: "-100777", sender: "333" }));
+  assert.equal(f.modelCalls.length, 2, "应有原回答 + 拿工具结果重答两次调用");
+  const followUp = JSON.stringify(f.modelCalls[1].messages);
+  assert.ok(followUp.includes("【工具执行结果】") && followUp.includes("抛硬币 1 次"), "重答应带上真实工具结果");
+  const visible = [...f.sentState.values()].join("\n") + f.sends.map((m) => m.message).join("\n");
+  assert.ok(!visible.includes("<tool_call>"), "发给用户的文本绝不能含 <tool_call> 标记");
+  assert.ok(visible.includes("抛出来了"), "最终应发重答后的自然回答");
+});
+
+// ================= v0.8.3：只 @ 不说话不回罐头句 =================
+
+test("v0.8.3 只 @ 不说话：走模型用人设接话，不发固定提示句", async () => {
+  const f = fixture({ answer: "在呢，怎么了" });
+  await f.handler(f.event("@mybot", { group: true, chat: "-100777", sender: "333" }));
+  assert.equal(f.modelCalls.length, 1, "光 @ 一声也应走模型");
+  const visible = [...f.sentState.values()].join("\n") + f.sends.map((m) => m.message).join("\n");
+  assert.ok(!visible.includes("把问题和"), "绝不能再发脚本味的固定提示句");
+  assert.ok(visible.includes("在呢"), "应发模型的人设回答");
+});
