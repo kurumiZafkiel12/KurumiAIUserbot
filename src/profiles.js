@@ -17,6 +17,22 @@ const BLOCKED_WORDS = ["干嘛", "干啥", "什么", "谁", "啥"];
 const QUOTE_CHARS = "「」『』“”‘’\"'《》〈〉【】";
 const MAX_NAME_LENGTH = 12;
 
+/**
+ * 印象清洗（纯函数，可单测）：印象应该是一到两句连贯的话，但模型偶尔会把
+ * 它写成带编号的事实清单、甚至用 <> 整段包起来——那是记事本的内容、不是印象。
+ * 规则：剥掉整体包裹符号、换行并成一句；出现两个以上编号条目时判定为清单，
+ * 整段作废（返回空串，调用方保留旧印象或不注入）。
+ */
+export function sanitizeImpression(text) {
+  let t = String(text || "").trim();
+  t = t.replace(/^[<《「“"']+/, "").replace(/[>》」”"']+$/, "").trim();
+  t = t.replace(/\s*\n\s*/g, " ");
+  const numbered = t.match(/(?:^|\s)\d{1,2}[.、)]\s*/g);
+  if (numbered && numbered.length >= 2) return "";
+  t = t.replace(/^\d{1,2}[.、)]\s*/, "").trim();
+  return t;
+}
+
 /** 把任意来源的用户 ID 统一成字符串。 */
 function normId(userId) {
   if (userId === undefined || userId === null) return "";
@@ -154,10 +170,10 @@ export class UserProfiles {
     return true;
   }
 
-  /** 取对某人的印象；还没有返回空字符串。 */
+  /** 取对某人的印象；还没有返回空字符串。读时也过一遍清洗：早期存量里若混进了清单式文本，按没有处理。 */
   impression(userId) {
     const rec = this.users.get(normId(userId));
-    return rec ? rec.impression : "";
+    return rec ? sanitizeImpression(rec.impression) : "";
   }
 
   /**
@@ -165,7 +181,7 @@ export class UserProfiles {
    * @returns {boolean} 是否写入
    */
   setImpression(userId, text) {
-    const value = String(text || "").trim();
+    const value = sanitizeImpression(text);
     if (!value) return false;
     const rec = this._record(userId);
     if (!rec) return false;
