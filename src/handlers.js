@@ -49,6 +49,10 @@ import { buildTtsRequest, pickVoiceName, cleanSpeechText, parseVoiceSwitch, voic
 import { isImageGenRequest, extractImagePrompt, buildImageGenRequest, parseImageGenResponse} from "./imagegen.js";
 import { decideSplit} from "./split.js";
 import { composeClockName, currentHHMM} from "./nameclock.js";
+import { toolGate, TOOLS_PROMPT_NOTE } from "./tools.js";
+import { chatWithTools } from "./toolchat.js";
+import { ToolStore } from "./toolstore.js";
+import { synthesizeEdgeTts, EDGE_DEFAULT_VOICE } from "./edgetts.js";
 
 const EDIT_INTERVAL_MS = 1500; // 流式刷新占位消息的最短间隔
 const TG_MESSAGE_LIMIT = 4000; // Telegram 单条消息上限约 4096，留点余量分片
@@ -163,6 +167,9 @@ export const OWNER_HELP_TEXT = `可用命令：
 【机器人改名】
 /ai 改名 <名字>（只改打头的名字；姓氏位固定是名字时钟的时间，不设自定义姓氏；别名 设置名称）
 
+【实用工具】（不用命令，聊天时直接说，我会自己调用工具去查/去算，不用 Key）
+查天气、翻译、百度/微博/抖音/B站热榜、汇率换算、加密货币价格、金价、油价、电影票房、豆瓣电影、维基百科/维基数据/DuckDuckGo、IP 归属、一言、今日诗词、图书查询、GitHub 仓库搜索、世界时间、黄历、星座运势、塔罗、抽签、掷骰子、抛硬币、二维码生成、短网址还原、Base64/URL/摩斯编解码、哈希、JSON 格式化、进制转换、单位换算、日期差、随机数、密码生成、字数统计、颜色换算、设定时提醒、待办清单。语音朗读自带默认音色，没配 TTS 接口也能用。
+
 其他：
 /ai 关闭（全局暂停：暂停期间只放行你自己的命令）
 /ai 开启（恢复）
@@ -182,6 +189,7 @@ export const PUBLIC_HELP_TEXT = `使用帮助：
 - 私聊：直接发消息就行，不用 @、不用加任何前缀
 - 问现在几点、今天几号，我按北京时间回答
 - 公开命令：@我 后发 /ai 帮助、/ai 账单、/ai 模型、/ai 人设 可以直接用（公开版，不走模型）
+- 还能直接让我：查天气、翻译、看热搜热榜、查汇率/币价/金价、算票房、查豆瓣电影、查百科、查 IP 归属、来一言/古诗、查图书、生成二维码、还原短网址、编解码、算哈希、进制/单位换算、算日期差、生成密码、统计字数、抽签、掷骰子、塔罗、看星座运势和黄历、设定时提醒、记待办——直接说就行，不用记命令
 
 想让我做点什么，直接说就行。`;
 
@@ -224,6 +232,7 @@ const pending = deps.pending || new PendingSelections();
 const slowdown = deps.slowdown || new SlowdownTracker();
 const usageStats = deps.usageStats || new UsageStats(null);
 const records = deps.records || new GroupRecords(null);
+const toolStore = deps.toolStore || new ToolStore(null);
 const fetchImpl = deps.fetchImpl || ((...args) => globalThis.fetch(...args));
 const sleepFn = deps.sleep || ((ms) => new Promise((r) => setTimeout(r, ms)));
 const updateProfile =
@@ -463,6 +472,8 @@ const vp = voicePersonaSegment(chatId, senderId);
 if (vp) parts.push(vp);
 // 当前时间段：不给的话模型对「现在几点了」只能瞎编或说不知道。
 parts.push(formatNowLine(config.timezone));
+// 工具说明：告诉模型有哪些内置工具、实时数据必须先调工具（身份断言仍保持最末尾）。
+parts.push(TOOLS_PROMPT_NOTE);
 // 身份断言永远在最末尾（破甲之后）：只给核验结论，不给任何数字 ID。
 parts.push(speakerAssertion(senderId, permConfig()));
 return parts.join("\n");
@@ -1576,16 +1587,19 @@ return out;
       if (!speech) return;
       const voice = pickVoiceName(config, chatId, senderId);
       const req = buildTtsRequest(config.ttsApiBase, config.ttsApiKey, speech, voice.id);
-      if (!req) {
-        logger.info("TTS 未配置接口地址或 key，跳过语音");
-        return;
+      let buf = null;
+      if (req) {
+        const res = await fetchImpl(req.url, req.options);
+        if (!res || !res.ok) {
+          logger.error(`TTS 请求失败：HTTP ${res ? res.status : "无响应"}`);
+          return;
+        }
+        buf = Buffer.from(await res.arrayBuffer());
+      } else {
+        // 没配自定义 TTS 接口：用内置 Edge TTS（免 Key）。选中的音色本身是 Edge 音色名就用它，否则默认音色。
+        const edgeVoice = /Neural$/.test(voice.id || "") ? voice.id : EDGE_DEFAULT_VOICE;
+        buf = await synthesizeEdgeTts(speech, edgeVoice);
       }
-      const res = await fetchImpl(req.url, req.options);
-      if (!res || !res.ok) {
-        logger.error(`TTS 请求失败：HTTP ${res ? res.status : "无响应"}`);
-        return;
-      }
-      const buf = Buffer.from(await res.arrayBuffer());
       if (!buf || buf.length < 500) {
         logger.error("TTS 返回的音频过短，跳过语音");
         return;
@@ -1906,6 +1920,10 @@ return out;
     };
 
     const secrets = collectSecrets(config);
+    // 工具门：问题可能需要内置工具（天气/汇率/热榜/换算等）时，先走工具调用管线；
+    // 提供方不支持工具时 chatWithTools 返回 null，再回退到原来的流式聊天。
+    const useTools = toolGate(parsed.question);
+    const toolOutbox = [];
     while (!answer) {
       const entry = pool.pick(tried, preferred);
       preferred = null; // 优先项只用一次，之后按权重挑
@@ -1913,22 +1931,35 @@ return out;
       tried.add(entry.name);
       try {
         let seenUsage = null;
-        const text = await pool.chat(
-          entry,
-          messages,
-          (partial) => {
-            const t = Date.now();
-            if (t - lastEditAt >= EDIT_INTERVAL_MS && partial.trim()) {
-              lastEditAt = t;
-              // 流式编辑也先脱敏：部分文本里可能已出现完整 key，不能原样发出去。
-              const shown = scrubSecrets(partial, secrets);
-              trackStreamingEdit(shown.slice(0, TG_MESSAGE_LIMIT));
-            }
-          },
-          (u) => {
-            seenUsage = u;
-          },
-        );
+        let text = null;
+        if (useTools) {
+          text = await chatWithTools(
+            entry,
+            messages,
+            { chatId, senderId, timezone: config.timezone, logger, outbox: toolOutbox, store: toolStore },
+            (u) => {
+              seenUsage = u;
+            },
+          );
+        }
+        if (text === null) {
+          text = await pool.chat(
+            entry,
+            messages,
+            (partial) => {
+              const t = Date.now();
+              if (t - lastEditAt >= EDIT_INTERVAL_MS && partial.trim()) {
+                lastEditAt = t;
+                // 流式编辑也先脱敏：部分文本里可能已出现完整 key，不能原样发出去。
+                const shown = scrubSecrets(partial, secrets);
+                trackStreamingEdit(shown.slice(0, TG_MESSAGE_LIMIT));
+              }
+            },
+            (u) => {
+              seenUsage = u;
+            },
+          );
+        }
         answer = text;
         usedEntry = entry;
         pool.markSuccess(entry);
@@ -1973,6 +2004,24 @@ return out;
       await sendAnswer(msg, placeholder, clean);
     } catch (err) {
       logger.error(`发送最终答案失败（chat=${chatId}，模型=${usedEntry.name}）：${err.message}`);
+    }
+
+    // 工具附件（如二维码图片）：随答案一起发到当前会话。
+    for (const item of toolOutbox) {
+      if (!item || item.type !== "photo" || !item.buffer) continue;
+      const tmp = path.join(os.tmpdir(), `tool_${Date.now()}_${Math.floor(Math.random() * 100000)}.png`);
+      try {
+        fs.writeFileSync(tmp, item.buffer);
+        await client.sendFile(msg.peerId, { file: tmp, replyTo: msg.id });
+      } catch (err) {
+        logger.error(`发送工具附件失败：${err.message}`);
+      } finally {
+        try {
+          fs.unlinkSync(tmp);
+        } catch {
+          // 临时文件删不掉不影响主流程。
+        }
+      }
     }
 
     // 追加语音（本群开了说、或这一条是「说 xxx」）：用完整文本合成一条，不受分条影响。
