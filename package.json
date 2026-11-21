@@ -2,6 +2,7 @@
   "dependencies": {
     "dotenv": "^16.4.5",
     "input": "^1.0.1",
+    "msedge-tts": "^2.1.1",
     "openai": "^4.67.0",
     "telegram": "^2.26.0"
   },
@@ -18,5 +19,5 @@
     "test": "node --test"
   },
   "type": "module",
-  "version": "0.7.3"
+  "version": "0.8.0"
 }
