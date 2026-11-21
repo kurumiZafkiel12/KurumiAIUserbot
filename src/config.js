@@ -5,7 +5,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { config as loadDotenv } from "dotenv";
 import { DEFAULT_PROVIDER } from "./triggers.js";
-import { normalizeAdminIds } from "./permissions.js";
+import { normalizeAdminIds, normalizeGuestIds } from "./permissions.js";
 import { normalizeVisionPool } from "./vision.js";
 import { DEFAULT_SERPER_BASE, DEFAULT_TAVILY_BASE } from "./search.js";
 
@@ -157,8 +157,10 @@ export function loadConfig() {
     providers,
     blacklist: Array.isArray(json.blacklist) ? json.blacklist.map(String) : [],
     adminIds: normalizeAdminIds(json.adminIds),
+    // 访客名单：privateChat="admins" 时可私聊的普通用户（仅放行私聊，无管理员权限）。
+    guestIds: normalizeGuestIds(json.guestIds),
     ignoreSenderIds: normalizeAdminIds(json.ignoreSenderIds),
-    // 私聊门禁："all"（默认）人人可私聊；"admins" 只有创建者+管理员可私聊，群聊不受影响。
+    // 私聊门禁："all"（默认）人人可私聊；"admins" 只有创建者+管理员+访客可私聊，群聊不受影响。
     privateChat: json.privateChat === "admins" ? "admins" : "all",
 
     // ---- v0.5.0 起的字段 ----
