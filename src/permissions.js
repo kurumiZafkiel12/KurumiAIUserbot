@@ -4,11 +4,14 @@
 // - 管理员（admin）：config.json 的 adminIds 名单，由创建者用命令增删。
 // 管理员不是第二号主：不能跑号主命令，但私聊门禁开启时可以私聊。
 // - 普通用户（user）：只能触发问答；能不能私聊由 config.privateChat 决定。
+// - 访客（guest）：不是第四档身份，只是私聊放行名单——privateChat="admins" 时
+//   名单里的人可以私聊，但身份仍是普通用户：不能跑号主命令、照常受限速与冷却。
 //
 // config 相关字段：
 // - ownerId：字符串，创建者数字 ID（可能为空，表示未配）
 // - adminIds：字符串数组，管理员数字 ID 名单
-// - privateChat："all"（默认，人人可私聊）或 "admins"（仅创建者+管理员可私聊）
+// - guestIds：字符串数组，访客数字 ID 名单（仅私聊放行用）
+// - privateChat："all"（默认，人人可私聊）或 "admins"（仅创建者+管理员+访客可私聊）
 
 /** 把任意来源的 ID 统一成字符串（数字 ID 经常以 number 形式出现）。 */
 function normId(userId) {
@@ -16,8 +19,8 @@ if (userId === undefined || userId === null) return "";
 return String(userId).trim();
 }
 
-/** 规范化管理员名单：转字符串、去空、去重。加载 config.json 时用。 */
-export function normalizeAdminIds(list) {
+/** 规范化 ID 名单：转字符串、去空、去重。加载 config.json 时用。 */
+function normalizeIdList(list) {
 if (!Array.isArray(list)) return [];
 const seen = new Set();
 for (const item of list) {
@@ -25,6 +28,23 @@ const id = normId(item);
 if (id) seen.add(id);
 }
 return [...seen];
+}
+
+/** 规范化管理员名单。 */
+export function normalizeAdminIds(list) {
+return normalizeIdList(list);
+}
+
+/** 规范化访客名单。 */
+export function normalizeGuestIds(list) {
+return normalizeIdList(list);
+}
+
+/** 是不是访客名单里的人（只查名单；访客仍是普通用户身份，只多一个私聊放行）。 */
+export function isGuest(userId, config) {
+const id = normId(userId);
+if (!id) return false;
+return normalizeGuestIds(config && config.guestIds).includes(id);
 }
 
 /** 是不是创建者本人。未配 ownerId 时谁都不是。 */
@@ -56,11 +76,11 @@ return isOwner(userId, config);
 /**
 * 能不能私聊机器人。
 * privateChat 缺省或非法值时按 "all" 处理（人人可私聊，保持旧行为）；
-* "admins" 时仅创建者与管理员可私聊，群聊不受此函数管辖。
+* "admins" 时仅创建者、管理员与访客可私聊，群聊不受此函数管辖。
 */
 export function canUsePrivateChat(userId, config) {
 if (!config || config.privateChat!== "admins") return true;
-return roleOf(userId, config)!== "user";
+return roleOf(userId, config)!== "user" || isGuest(userId, config);
 }
 
 /**
