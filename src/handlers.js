@@ -161,7 +161,7 @@ export const OWNER_HELP_TEXT = `可用命令：
 /ai 清空用户记忆 <用户ID>
 
 【机器人改名】
-/ai 改名 <名字> <姓氏>（姓氏可空；别名 设置名称；开了名字时钟时显示为「姓氏 时:分」）
+/ai 改名 <名字>（只改打头的名字；姓氏位固定是名字时钟的时间，不设自定义姓氏；别名 设置名称）
 
 其他：
 /ai 关闭（全局暂停：暂停期间只放行你自己的命令）
@@ -1380,21 +1380,23 @@ return out;
     }
 
     // ---- 改名 ----
+    // 号主定版：默认只能改账号名字，姓氏位只能是时间——本命令只改打头的名字，
+    // 姓氏永远由名字时钟写当前时间；命令里多填的姓氏直接忽略并说明。
     if (cmd === "改名" || cmd === "设置名称") {
       const first = unwrapArg((rest[0] || "").trim());
-      const last = rest.length > 1 ? unwrapArg(rest.slice(1).join(" ").trim()) : "";
-      if (!first) return reply(msg, "用法：/ai 改名 <名字> <姓氏>（姓氏可不填）");
-      if (!saveAndReload({ customName: { first, last } })) return reply(msg, "保存失败，请看日志。");
+      const ignoredLast = rest.length > 1 ? unwrapArg(rest.slice(1).join(" ").trim()) : "";
+      if (!first) return reply(msg, "用法：/ai 改名 <名字>（只改打头的名字；姓氏位固定是时钟时间）");
+      if (!saveAndReload({ customName: { first } })) return reply(msg, "保存失败，请看日志。");
       try {
         if (config.nameClock) {
-          const shown = composeClockName(first, last, currentHHMM(config.timezone));
+          const shown = composeClockName(first, currentHHMM(config.timezone));
           await updateProfile(shown.firstName, shown.lastName);
         } else {
-          await updateProfile(first, last);
+          await updateProfile(first, "");
         }
         return reply(
           msg,
-          `已更新机器人名字：${first}${last ? ` ${last}` : ""}，已生效。${config.nameClock ? "名字时钟会用新名字打头。" : ""}`,
+          `已更新机器人名字：${first}，已生效。姓氏位固定是时钟时间，不设自定义姓氏。${ignoredLast ? "（你填的姓氏已忽略）" : ""}`,
         );
       } catch (err) {
         logger.error(`改名调用 Telegram 失败：${err.message}`);
