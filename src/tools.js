@@ -388,12 +388,73 @@ const WMO_TEXT = {
   75: "大雪", 77: "雪粒", 80: "阵雨", 81: "阵雨", 82: "暴雨", 85: "阵雪", 86: "阵雪", 95: "雷阵雨", 96: "雷阵雨伴冰雹", 99: "雷阵雨伴冰雹",
 };
 
+/**
+ * 地理编码：先 Open-Meteo，但它的中文索引有缺口（实测「宜春」查不到、只有拼音条目 Yichun，
+ * 「南昌」「伊春」却有），查不到时用 OSM 的 Photon 兜底（中文地名覆盖全；Nominatim 公共实例
+ * 限流太严，实测直接 429，不用）。Photon 结果优先挑城市类条目，其次才用行政区中心点。
+ */
+async function geocodeCity(name) {
+  const geo = await fetchJson(`https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(name)}&count=1&language=zh&format=json`);
+  const place = geo && geo.results && geo.results[0];
+  if (place) {
+    return { latitude: place.latitude, longitude: place.longitude, label: `${place.name}（${place.country || ""}）`, timezone: place.timezone };
+  }
+  const ph = await fetchJson(`https://photon.komoot.io/api/?q=${encodeURIComponent(name)}&limit=5`);
+  const feats = (ph && ph.features) || [];
+  if (!feats.length) return null;
+  const hit = feats.find((f) => f.properties && (f.properties.type === "city" || f.properties.type === "town")) || feats[0];
+  const coords = (hit.geometry && hit.geometry.coordinates) || [];
+  if (typeof coords[0] !== "number" || typeof coords[1] !== "number") return null;
+  const p = hit.properties || {};
+  const label = [p.name, p.state].filter(Boolean).join(" ") || name;
+  return { latitude: coords[1], longitude: coords[0], label, timezone: "auto" };
+}
+
+/**
+ * wttr.in 兜底天气：它自己解析中文地名（背后 WorldWeatherOnline 数据），两个地理编码都查不到时
+ * 直接用它出完整天气。返回与 Open-Meteo 路径同形状的文本；查不到返回 null。
+ */
+// wttr.in 的 j1 描述不跟 lang 参数走、只给英文，自己映射常见值（有限集合）。
+const WTTR_DESC_ZH = {
+  Sunny: "晴", Clear: "晴", "Partly cloudy": "多云", "Partly Cloudy": "多云", Cloudy: "阴", Overcast: "阴",
+  Mist: "雾", Fog: "雾", "Freezing fog": "冻雾", "Light rain": "小雨", "Moderate rain": "中雨", "Heavy rain": "大雨",
+  "Light rain shower": "阵雨", "Moderate or heavy rain shower": "阵雨", "Torrential rain shower": "暴雨",
+  "Patchy rain possible": "局部有雨", "Patchy light rain": "局部小雨", "Light drizzle": "毛毛雨",
+  "Light snow": "小雪", "Moderate snow": "中雪", "Heavy snow": "大雪", "Light snow showers": "阵雪",
+  "Thundery outbreaks possible": "可能有雷雨", "Patchy light rain with thunder": "局部雷阵雨",
+  "Moderate or heavy rain with thunder": "雷阵雨", Snow: "雪", Rain: "雨",
+};
+
+export async function wttrWeatherTool(city) {
+  const data = await fetchJson(`https://wttr.in/${encodeURIComponent(city)}?format=j1&lang=zh`);
+  const cur = data && data.current_condition && data.current_condition[0];
+  if (!cur) return null;
+  const area = (data.nearest_area && data.nearest_area[0]) || {};
+  const pick = (arr) => (Array.isArray(arr) && arr[0] && arr[0].value) || "";
+  const zhDesc = (raw) => WTTR_DESC_ZH[String(raw || "").trim()] || String(raw || "").trim() || "未知";
+  // 地名以用户问的为准：wttr 的 nearest_area 常给附近小站名（实测问宜春回 Wanghua），只借它的省份作注。
+  const region = pick(area.region);
+  const label = region && /[一-鿿]/.test(region) && !String(city).includes(region) ? `${city}（${region}）` : String(city);
+  const desc = zhDesc(pick(cur.weatherDesc));
+  const lines = [`${label}当前：${desc}，${cur.temp_C}°C，湿度 ${cur.humidity}%，风速 ${cur.windspeedKmph} km/h。`];
+  for (const day of (data.weather || []).slice(0, 3)) {
+    const mid = (day.hourly || [])[4] || (day.hourly || [])[0] || {};
+    const d = mid.weatherDesc ? zhDesc(pick(mid.weatherDesc)) : "";
+    lines.push(`${day.date}：${d ? `${d}，` : ""}${day.mintempC}–${day.maxtempC}°C`);
+  }
+  return lines.join("\n");
+}
+
 export async function weatherTool(city) {
   const name = String(city || "").trim();
   if (!name) throw new Error("要给城市名");
-  const geo = await fetchJson(`https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(name)}&count=1&language=zh&format=json`);
-  const place = geo && geo.results && geo.results[0];
-  if (!place) throw new Error(`找不到城市：${name}`);
+  const place = await geocodeCity(name);
+  if (!place) {
+    // 两个地理编码都查不到：最后一层用 wttr.in（自己能解析中文地名）。
+    const fallback = await wttrWeatherTool(name).catch(() => null);
+    if (fallback) return fallback;
+    throw new Error(`找不到城市：${name}`);
+  }
   const tz = encodeURIComponent(place.timezone || "auto");
   const fc = await fetchJson(
     `https://api.open-meteo.com/v1/forecast?latitude=${place.latitude}&longitude=${place.longitude}&current=temperature_2m,relative_humidity_2m,weather_code,wind_speed_10m&daily=temperature_2m_max,temperature_2m_min,weather_code&timezone=${tz}&forecast_days=3`,
@@ -401,7 +462,7 @@ export async function weatherTool(city) {
   const cur = fc.current || {};
   const daily = fc.daily || {};
   const lines = [
-    `${place.name}（${place.country || ""}）当前：${WMO_TEXT[cur.weather_code] || "未知"}，${cur.temperature_2m}°C，湿度 ${cur.relative_humidity_2m}%，风速 ${cur.wind_speed_10m} km/h。`,
+    `${place.label}当前：${WMO_TEXT[cur.weather_code] || "未知"}，${cur.temperature_2m}°C，湿度 ${cur.relative_humidity_2m}%，风速 ${cur.wind_speed_10m} km/h。`,
   ];
   for (let i = 0; i < (daily.time || []).length; i++) {
     lines.push(`${daily.time[i]}：${WMO_TEXT[daily.weather_code[i]] || ""}，${daily.temperature_2m_min[i]}–${daily.temperature_2m_max[i]}°C`);
@@ -756,7 +817,7 @@ const NUM = { type: "number"};
 export const TOOL_DEFS = [
 { name: "get_weather", description: "查某个城市的实时天气和未来 3 天预报。用户问天气、气温、下不下雨时调用。", parameters: S({ city: STR}, ["city"]), run: (a) => weatherTool(a.city)},
 { name: "translate_text", description: "把一段文字翻译成另一种语言（多源自动切换）。用户要翻译时调用；target 用语言代码如 zh-CN、en、ja、ko。", parameters: S({ text: STR, target: STR, source: STR}, ["text"]), run: (a) => translateTool(a.text, a.target, a.source)},
-{ name: "hot_list", description: "查热搜热榜。source 取 baidu（百度热搜）、weibo（微博热搜）、douyin（抖音热榜）、bilibili（B站热门视频）。", parameters: S({ source: STR}, ["source"]), run: (a) => hotListTool(a.source)},
+{ name: "hot_list", description: "查热搜热榜。用户问新闻、热点、头条时也用它（默认 baidu）。source 取 baidu（百度热搜）、weibo（微博热搜）、douyin（抖音热榜）、bilibili（B站热门视频）。", parameters: S({ source: STR}, ["source"]), run: (a) => hotListTool(a.source)},
 { name: "github_search", description: "在 GitHub 上按关键词搜索仓库，返回星标靠前的结果。", parameters: S({ query: STR}, ["query"]), run: (a) => githubSearchTool(a.query)},
 { name: "exchange_rate", description: "查汇率或换算货币。币种用三字母代码（USD、CNY、JPY、EUR、GBP、HKD 等）；给了 amount 就换算金额。", parameters: S({ from: STR, to: STR, amount: NUM}, ["from", "to"]), run: (a) => exchangeRateTool(a.from, a.to, a.amount)},
 { name: "crypto_price", description: "查加密货币价格（美元+人民币+24h 涨跌）。coins 是币种符号，逗号分隔，如 BTC,ETH。", parameters: S({ coins: STR}, ["coins"]), run: (a) => cryptoPriceTool(a.coins)},
@@ -823,7 +884,7 @@ return `工具 ${name} 这次没查到：${err.message}。请如实告诉用户�
 /* ---------------- 触发门 ---------------- */
 
 const GATE_WORDS = [
-"天气", "气温", "下雨", "下雪", "预报", "翻译", "译成", "翻成", "热搜", "热榜", "热门视频", "热度榜",
+"天气", "气温", "下雨", "下雪", "预报", "翻译", "译成", "翻成", "热搜", "热榜", "热门视频", "热度榜", "新闻", "热点", "头条",
 "汇率", "换算", "币价", "比特币", "以太坊", "btc", "eth", "金价", "黄金", "白银价格", "油价", "票房",
 "豆瓣", "维基", "百科", "wikidata", "duckduckgo", "归属", "ip地址", "一言", "古诗", "诗词", "图书",
 "找书", "二维码", "短网址", "短链接", "还原", "base64", "摩斯", "哈希", "md5", "sha1", "sha256", "uuid",
@@ -839,7 +900,44 @@ if (!q) return false;
 return GATE_WORDS.some((w) => q.includes(w.toLowerCase()));
 }
 
+/**
+ * 从模型文本里提取被写成纯文本的工具调用：<tool_call>{"name": "...", "arguments": {...}}</tool_call>。
+ * 有的提供方不走原生 function call、把调用写成这种标记文本（DeepSeek 系常见），管线要能识别并真执行，
+ * 不能把标记原样发给用户。arguments 是对象或 JSON 字符串都认；解析不了的块跳过。
+ */
+export function extractTextToolCalls(text) {
+  const calls = [];
+  const s = String(text || "");
+  const re = /<tool_call>\s*([\s\S]*?)\s*<\/tool_call>/g;
+  let m;
+  while ((m = re.exec(s)) !== null) {
+    try {
+      const obj = JSON.parse(m[1]);
+      if (!obj || typeof obj.name !== "string") continue;
+      let args = obj.arguments !== undefined ? obj.arguments : obj.args;
+      if (typeof args === "string") {
+        try {
+          args = JSON.parse(args);
+        } catch {
+          args = {};
+        }
+      }
+      calls.push({ name: obj.name, args: args && typeof args === "object" ? args : {} });
+    } catch {
+      // 不是合法 JSON 的块忽略。
+    }
+  }
+  return calls;
+}
+
+/** 剥掉文本里的 <tool_call>...</tool_call> 块（抢救失败时的兜底，绝不能把标记发给用户）。 */
+export function stripTextToolCalls(text) {
+  return String(text || "")
+    .replace(/<tool_call>[\s\S]*?<\/tool_call>/g, "")
+    .trim();
+}
+
 /** 注入系统提示的工具说明（放在发言者断言之前，不抢占末尾断言的位置）。 */
 export const TOOLS_PROMPT_NOTE =
 "你有一组内置工具可以调用（查天气、翻译、热搜热榜、汇率、币价、金价、油价、票房、豆瓣电影、百科、IP 归属、一言、诗词、图书、二维码、短网址还原、编解码、哈希、进制/单位换算、日期计算、随机数、密码生成、字数统计、颜色换算、抽签、掷骰子、抛硬币、塔罗、星座运势、黄历、世界时间、设定时提醒、待办清单、GitHub 仓库搜索）。" +
-"用户的问题需要实时数据、精确计算或这些功能时，先调用工具拿到结果再回答，不许凭记忆编造实时数据（天气、价格、热榜、票房尤其不许编）。工具返回失败或不可用时，如实告诉用户暂时查不到，不要用假数据糊弄。";
+"用户的问题需要实时数据、精确计算或这些功能时，先调用工具拿到结果再回答，不许凭记忆编造实时数据（天气、价格、热榜、票房尤其不许编）。工具返回失败或不可用时，如实告诉用户暂时查不到，不要用假数据糊弄。工具只能通过系统提供的调用机制使用，绝不要在回复正文里写 <tool_call> 标记或工具调用的 JSON。";
