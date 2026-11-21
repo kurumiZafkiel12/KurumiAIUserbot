@@ -272,8 +272,20 @@ function permConfig() {
 return { ownerId: config.ownerId, adminIds: [...adminIds], privateChat: config.privateChat};
 }
 
+const QUOTE_MIN_LENGTH = 1000;
+
+/**
+ * 超长文本的 TG 可展开引用实体：整段折叠成引用块，点开才展开，避免长文刷屏
+ * （号主要求，帮助这类超长文尤其明显）。短文本返回 undefined（不加格式）。
+ * 长度按 JS 字符串长度计，与 TG 的 UTF-16 偏移口径一致。
+ */
+function quoteEntitiesFor(text) {
+if (!text || text.length < QUOTE_MIN_LENGTH) return undefined;
+return [new Api.MessageEntityBlockquote({ offset: 0, length: text.length, collapsed: true })];
+}
+
 async function reply(msg, text) {
-await client.sendMessage(msg.peerId, { message: text, replyTo: msg.id});
+await client.sendMessage(msg.peerId, { message: text, replyTo: msg.id, formattingEntities: quoteEntitiesFor(text) });
 recentSentTexts.push(String(text).trim());
 if (recentSentTexts.length > 30) recentSentTexts.shift();
 }
@@ -500,7 +512,7 @@ content:
 "要求：\n" +
 "- 输出固定分两段：先一行「【会话记事本】」，下面是会话记事本的条目；再一行「【用户记事本】」，下面是用户记事本的条目\n" +
 "- 合并同一个人不同称呼/别名的条目，删掉过时、矛盾或明显记错的，加上对话里新出现的、值得长期记住的事实\n" +
-"- 会话记事本记本会话里的事（在场任何人的都行）；用户记事本只记当前用户本人的事（他的情况、喜好、计划等），这样他在别的群、别的私聊里机器人也记得他\n" +
+"- 会话记事本记本会话里的事（在场任何人的都行）；用户记事本只记当前用户本人的事（他的情况、喜好、计划等），这样他在别的群、别的私聊里机器人也记得他；用户记事本只记他本人说过的事与他的情况、喜好，不要记机器人对他的调侃或评价，不要写成「被评价……」\n" +
 "- 每条一行、以「- 」开头，每段最多 25 条，一条只写一件事，尽量带上是谁的事或谁说的（如「小明：喜欢吃辣」）\n" +
 "- 只记公开的日常事实；不要记密码、住址、电话、财务等隐私\n" +
 "- 不要以机器人自己为主语记条目\n" +
@@ -534,7 +546,7 @@ const imp = await askModelOnce([
 role: "user",
 content:
 "根据下面这个人最近的发言，概括你对他的印象：一到两句中文，只记说话风格、常聊的话题、氛围和公开的日常小事，" +
-"不要记密码、住址、电话、财务等隐私。只输出印象本身，不要加任何前缀。" +
+"不要记密码、住址、电话、财务等隐私。只输出印象本身，不要加任何前缀；不要列条目、不要编号、不要用任何符号包裹，只写一到两句连贯的话。" +
 (oldImp? `已有印象是：「${oldImp}」。有新信息就给出更新后的完整印象，没有新信息就只回复「保留」。`: "") +
 `\n\n\n${samples.map((m) => m.content).join("\n")}`,
 },
@@ -1465,9 +1477,9 @@ return out;
    * 必须吞掉这个错误——否则 sendAnswer 会在第一处编辑就中断，超长答案的尾段续发
    * 与人设分条的后续条会整段丢失（审计 K062-08）。其它错误照常抛出。
    */
-  async function editPlaceholderText(peerId, messageId, text) {
+  async function editPlaceholderText(peerId, messageId, text, formattingEntities) {
     try {
-      await client.editMessage(peerId, { message: messageId, text });
+      await client.editMessage(peerId, { message: messageId, text, formattingEntities });
     } catch (err) {
       if (!isNotModifiedError(err)) throw err;
     }
@@ -1481,7 +1493,9 @@ return out;
   async function sendAnswer(msg, placeholder, answer) {
     const parts = decideSplit(answer, { personaMode: isPersonaMode() });
     if (parts.length <= 1) {
-      await editPlaceholderText(msg.peerId, placeholder.id, answer.slice(0, TG_MESSAGE_LIMIT));
+      // 整条答案只占一条消息且够长时，折叠成可展开引用，避免长文刷屏；要分片的长答不折（只折第一片会把后文藏错地方）。
+      const quoteEntities = answer.length <= TG_MESSAGE_LIMIT ? quoteEntitiesFor(answer) : undefined;
+      await editPlaceholderText(msg.peerId, placeholder.id, answer.slice(0, TG_MESSAGE_LIMIT), quoteEntities);
       let restText = answer.slice(TG_MESSAGE_LIMIT);
       while (restText.length > 0) {
         const chunk = restText.slice(0, TG_MESSAGE_LIMIT);
