@@ -112,7 +112,7 @@ function fixture(options = {}) {
   const sentState = new Map();
   const client = {
     sendMessage: async (peer, payload) => {
-      const m = { id: ++messageId, message: payload.message, peerId: peer, replyTo: payload.replyTo };
+      const m = { id: ++messageId, message: payload.message, peerId: peer, replyTo: payload.replyTo, formattingEntities: payload.formattingEntities };
       sends.push(m);
       sentState.set(m.id, m.message);
       return m;
@@ -524,4 +524,32 @@ test("v0.7.0 后台整理双段输出：会话事实与用户事实分别落盘"
   for (let i = 0; i < 20; i++) await new Promise((r) => setImmediate(r));
   assert.ok(f.notebook.facts("-100777").some((x) => x.includes("聊游戏")), "会话记事本应写入会话段");
   assert.ok(f.userNotebook.facts("999").some((x) => x.includes("很有钱")), "用户记事本应写入用户段");
+});
+
+// ================= v0.7.1：超长回复折叠为可展开引用 =================
+
+test("v0.7.1 号主帮助是超长文：整段带 collapsed 引用实体发送", async () => {
+  const f = fixture();
+  await f.handler(f.event("/ai 帮助"));
+  const help = f.sends.find((s) => s.message.includes("【记事本】"));
+  assert.ok(help, "应发出号主帮助");
+  assert.ok(help.message.length >= 1000);
+  const ent = (help.formattingEntities || [])[0];
+  assert.ok(ent, "超长帮助应带引用实体");
+  assert.equal(ent.className, "MessageEntityBlockquote");
+  assert.equal(ent.collapsed, true);
+  assert.equal(ent.offset, 0);
+  assert.equal(ent.length, help.message.length);
+});
+
+test("v0.7.1 短回复不带引用实体；超长单条答案的最终编辑带引用实体", async () => {
+  const f = fixture();
+  await f.handler(f.event("/ai 记事本"));
+  const short = f.sends[f.sends.length - 1];
+  assert.equal(short.formattingEntities, undefined);
+
+  const g = fixture({ answer: "答".repeat(1500) });
+  await g.handler(g.event("讲个长故事", { sender: "999" }));
+  const quoted = g.edits.filter((e) => (e.formattingEntities || []).some((x) => x.collapsed === true));
+  assert.ok(quoted.length >= 1, "超长答案的最终编辑应带 collapsed 引用实体");
 });
