@@ -80,6 +80,9 @@ export const OWNER_HELP_TEXT = `可用命令：
 /ai 加管理员 <用户ID>
 /ai 删管理员 <用户ID>
 /ai 管理员列表（管理员是主人信任的人：机器人认得他、不受限速和提问冷却影响）
+/ai 加访客 <用户ID>（访客：私聊门禁开着时也能私聊，但没有管理员权限，照常受限速与冷却）
+/ai 删访客 <用户ID>
+/ai 访客列表
 
 【拉黑/限速】
 /ai 拉黑 <用户ID>
@@ -232,6 +235,8 @@ await client.invoke(new Api.account.UpdateProfile({ firstName, lastName: lastNam
 const blacklist = new Set(config.blacklist || []);
 /** @type {Set<string>} 管理员名单（创建者用命令增删，持久化在 config.json） */
 const adminIds = new Set((config.adminIds || []).map(String));
+/** @type {Set<string>} 访客名单（创建者用命令增删，持久化在 config.json；仅私聊放行） */
+const guestIds = new Set((config.guestIds || []).map(String));
 /** @type {Set<string>} 限速名单（持久化在 config.json 的 slowdownUsers） */
 const slowdownSet = new Set((config.slowdownUsers || []).map(String));
 /** @type {Set<string>} 代码关键词（持久化在 config.json 的 codeKeywords） */
@@ -269,7 +274,7 @@ entry.kind === "加音色" ||
 
 // 权限判断用的配置视图：管理员名单以运行时 Set 为准（命令增删后立刻生效，不必重启）。
 function permConfig() {
-return { ownerId: config.ownerId, adminIds: [...adminIds], privateChat: config.privateChat};
+return { ownerId: config.ownerId, adminIds: [...adminIds], guestIds: [...guestIds], privateChat: config.privateChat};
 }
 
 const QUOTE_MIN_LENGTH = 1000;
@@ -303,6 +308,14 @@ try {
 saveConfigJson({ adminIds: [...adminIds]});
 } catch (err) {
 logger.error(`保存管理员名单失败：${err.message}`);
+}
+}
+
+function persistGuests() {
+try {
+saveConfigJson({ guestIds: [...guestIds]});
+} catch (err) {
+logger.error(`保存访客名单失败：${err.message}`);
 }
 }
 
@@ -1055,6 +1068,34 @@ return out;
       }
       const lines = [...adminIds].map((id) => `- ${id}`);
       return reply(msg, `管理员名单（共 ${adminIds.size} 人）：\n${lines.join("\n")}`);
+    }
+
+    if (cmd === "加访客") {
+      const target = unwrapArg((rest[0] || "").trim());
+      if (!target) return reply(msg, "用法：/ai 加访客 <用户ID>");
+      if (isOwner(target, permConfig())) return reply(msg, "创建者本人不用加访客。");
+      if (adminIds.has(target)) return reply(msg, `用户 ${target} 已是管理员，本来就能私聊，不用加访客。`);
+      if (guestIds.has(target)) return reply(msg, `用户 ${target} 已经是访客了`);
+      guestIds.add(target);
+      persistGuests();
+      return reply(msg, `已添加访客 ${target}：私聊门禁开着时他也能私聊了（仅私聊放行，没有管理员权限）`);
+    }
+
+    if (cmd === "删访客") {
+      const target = unwrapArg((rest[0] || "").trim());
+      if (!target) return reply(msg, "用法：/ai 删访客 <用户ID>");
+      if (!guestIds.has(target)) return reply(msg, `用户 ${target} 不在访客名单里`);
+      guestIds.delete(target);
+      persistGuests();
+      return reply(msg, `已删除访客 ${target}`);
+    }
+
+    if (cmd === "访客列表") {
+      if (guestIds.size === 0) {
+        return reply(msg, "暂无访客。用 /ai 加访客 <用户ID> 添加。");
+      }
+      const lines = [...guestIds].map((id) => `- ${id}`);
+      return reply(msg, `访客名单（共 ${guestIds.size} 人）：\n${lines.join("\n")}`);
     }
 
     if (cmd === "查看api") {
