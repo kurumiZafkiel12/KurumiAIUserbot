@@ -1,4 +1,6 @@
 // 首次登录：手机号 + 验证码（+ 可选两步验证密码），全程在同一个会话里完成。
+// 不需要申请 API 凭证：默认用内置的 Telegram Desktop 公开凭证（config.js），
+// .env 里填了 TELEGRAM_API_ID / TELEGRAM_API_HASH 时才用自定义的那套。
 // 登录成功后把会话字符串存到 .ai-session，之后 npm start 直接用它连接，不用再输验证码。
 //
 // 注意：发码和验码必须在同一次运行里完成——中途退出再重来，验证码会失效（PHONE_CODE_EXPIRED）。
@@ -27,6 +29,9 @@ function printPhoneWarning() {
 
 async function main() {
   const config = loadConfig(); // 只用其中的 apiId / apiHash
+  if (config.apiCredentialSource === "builtin") {
+    console.log("（使用内置 Telegram Desktop 公开凭证登录，不需要申请 API 凭证。）");
+  }
   printPhoneWarning();
 
   const phone = (await input.text("请输入手机号（带 + 和国家区号）: ")).trim();
