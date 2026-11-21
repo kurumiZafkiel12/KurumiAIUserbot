@@ -46,6 +46,10 @@ async function main() {
   if (config.myUsername && config.myUsername !== username) {
     logger.warn(`.env 的 MY_USERNAME（${config.myUsername}）与账号实际用户名（${username}）不一致，提及触发可能失灵，请改成实际用户名。`);
   }
+  // 预热实体缓存：新会话只凭 ID 给没见过的私聊对象发消息会失败（缺 accessHash），
+  // 先把已有对话的实体灌进缓存；失败不挡启动，发送路径上还有预热重试兜底。
+  client.getDialogs().catch(() => {});
+
   const effectiveConfig = { ...config, myUsername: username };
 
   // 名字时钟：号主用 /ai 改名 设了 customName 时用它打头替代 NAME_PREFIX。
