@@ -130,7 +130,7 @@ test("v0.6.0 新字段解析：破甲/识图池规范化/TTS/音色人格/每群
   assert.deepEqual(cfg.recordGroups, ["-1001", "123"]);
   assert.deepEqual(cfg.recordContextLimit, { "-1001": 50 });
   assert.equal(cfg.searchApiKey, "search-key-y");
-  assert.deepEqual(cfg.customName, { first: "大肥鱼", last: "狂三" });
+  assert.deepEqual(cfg.customName, { first: "大肥鱼" });
 });
 
 test("搜索 key 与 TTS 凭证可从 .env 兜底，config.json 优先", () => {
