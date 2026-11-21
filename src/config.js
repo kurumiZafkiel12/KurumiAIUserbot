@@ -205,10 +205,11 @@ export function loadConfig() {
       (typeof json.searchApiKey === "string" && json.searchApiKey.trim()) || (process.env.SEARCH_API_KEY || "").trim(),
     searchApiBase: (process.env.SEARCH_API_BASE || DEFAULT_SERPER_BASE).trim(),
     searchApiBase2: (process.env.SEARCH_API_BASE_2 || DEFAULT_TAVILY_BASE).trim(),
-    // 号主改名（/ai 改名）：{first, last}，last 可空。设了之后名字时钟用它打头替代 NAME_PREFIX。
+    // 号主改名（/ai 改名）：只存 {first}。号主定版：姓氏位只能是时钟时间，
+    // 旧配置里存过的 last 一律忽略、不再读入。
     customName:
       json.customName && typeof json.customName === "object" && typeof json.customName.first === "string" && json.customName.first.trim()
-        ? { first: json.customName.first.trim(), last: typeof json.customName.last === "string" ? json.customName.last.trim() : "" }
+        ? { first: json.customName.first.trim() }
         : null,
   };
 }
