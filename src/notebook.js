@@ -76,6 +76,26 @@ export function sanitizeFacts(lines, { max = 25, selfNames = DEFAULT_SELF_NAMES 
   return out.length > cap ? out.slice(out.length - cap) : out;
 }
 
+/**
+ * 解析后台整理的双段输出：【会话记事本】与【用户记事本】两段，各自是「- 」开头的事实行。
+ * 兼容旧格式：没有任何段标题时，全部行算会话记事本（用户段为空）。
+ * 纯函数，可单测。
+ * @returns {{chatLines: string[], userLines: string[]}}
+ */
+export function parseConsolidationSections(out) {
+  const chatLines = [];
+  const userLines = [];
+  let target = chatLines;
+  for (const raw of String(out || "").split(/\r?\n/)) {
+    const line = raw.trim();
+    if (/^【会话记事本】/.test(line)) { target = chatLines; continue; }
+    if (/^【用户记事本】/.test(line)) { target = userLines; continue; }
+    if (!line || line === "（空）") continue;
+    target.push(line);
+  }
+  return { chatLines, userLines };
+}
+
 export class Notebook {
   /**
    * @param {string|null} filePath 持久化文件路径（如 facts.json）；null 表示只用内存不落盘
