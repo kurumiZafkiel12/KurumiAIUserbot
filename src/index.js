@@ -91,6 +91,10 @@ async function main() {
   const notebook = new Notebook(path.resolve("facts.json"), {
     botNames: [effectiveConfig.namePrefix, username],
   });
+  // 用户记事本：按用户 ID 记的长期事实（userfacts.json），跨所有群与私聊通用。
+  const userNotebook = new Notebook(path.resolve("userfacts.json"), {
+    botNames: [effectiveConfig.namePrefix, username],
+  });
   const profiles = new UserProfiles(path.resolve("profiles.json"));
   // 运行时状态（全局暂停开关）落盘在 state.json：重启后保持关闭，直到创建者发 /ai 开启。
   const state = new RuntimeState(path.resolve("state.json"));
@@ -110,6 +114,7 @@ async function main() {
     reloadRuntime,
     store,
     notebook,
+    userNotebook,
     profiles,
     state,
     usageStats,
