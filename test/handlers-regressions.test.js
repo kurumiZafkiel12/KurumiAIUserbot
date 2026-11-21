@@ -143,6 +143,7 @@ function fixture(options = {}) {
   const records = new GroupRecords(recordsPath);
   const notebookPath = path.join(tmpRoot, `facts-${Math.random().toString(36).slice(2)}.json`);
   const notebook = new Notebook(notebookPath);
+  const userNotebook = new Notebook(null);
   const profiles = new UserProfiles(null);
   const state = new RuntimeState(null);
   const usageStats = new UsageStats(null);
@@ -156,6 +157,7 @@ function fixture(options = {}) {
     pending,
     records,
     notebook,
+    userNotebook,
     profiles,
     state,
     usageStats,
@@ -197,7 +199,7 @@ function fixture(options = {}) {
     return { message, getSender: async () => ({ firstName: "测试用户" }) };
   }
 
-  return { handler, event, pool, getPool: () => currentPool, config, store, pending, records, notebook, profiles, state, sends, edits, files, sentState, modelCalls, logger, recordsPath, notebookPath };
+  return { handler, event, pool, getPool: () => currentPool, config, store, pending, records, notebook, userNotebook, profiles, state, sends, edits, files, sentState, modelCalls, logger, recordsPath, notebookPath };
 }
 
 // ================= K062-01：敏感 pending 过期墓碑 =================
@@ -464,4 +466,62 @@ test("K062-01 对照：未过期的换key 待办照常保存 key，不进模型�
   assert.equal(f.modelCalls.length, 0);
   assert.equal(f.records.recent(group, 10).length, 0);
   assert.ok(!f.sends.some((m) => m.message.includes(credential)));
+});
+
+// ================= v0.7.0：按用户 ID 的全局记忆 =================
+
+test("v0.7.0 查看印象：称呼、印象与用户记事本一并列出", async () => {
+  const f = fixture();
+  f.profiles.setCallName("999", "阿紫");
+  f.profiles.setImpression("999", "爱聊游戏，语气爽快");
+  f.userNotebook.addFacts("999", ["阿紫：自称很有钱"]);
+  await f.handler(f.event("/ai 查看印象 999"));
+  const reply = f.sends.map((s) => s.message).join("\n");
+  assert.match(reply, /阿紫/);
+  assert.match(reply, /爱聊游戏，语气爽快/);
+  assert.match(reply, /自称很有钱/);
+  assert.match(reply, /跨会话通用/);
+});
+
+test("v0.7.0 印象/称呼设置命令：写完立刻能查到", async () => {
+  const f = fixture();
+  await f.handler(f.event("/ai 印象 999 夜猫子，爱聊 VPS"));
+  assert.equal(f.profiles.impression("999"), "夜猫子，爱聊 VPS");
+  await f.handler(f.event("/ai 称呼 999 小紫"));
+  assert.equal(f.profiles.callName("999"), "小紫");
+  await f.handler(f.event("/ai 查看印象 999"));
+  const reply = f.sends.map((s) => s.message).join("\n");
+  assert.match(reply, /夜猫子，爱聊 VPS/);
+  assert.match(reply, /小紫/);
+});
+
+test("v0.7.0 用户记事本跨群注入：别的群里也带着这个人的事实", async () => {
+  const f = fixture();
+  f.userNotebook.addFacts("999", ["测试用户：自称很有钱"]);
+  await f.handler(f.event("@mybot 我富不富", { sender: "999", group: true, chat: "-100888" }));
+  assert.ok(f.modelCalls.length >= 1);
+  const system = f.modelCalls[0].messages[0].content;
+  assert.match(system, /自称很有钱/);
+  assert.match(system, /任何群、任何私聊里都通用/);
+});
+
+test("v0.7.0 忘掉用户/清空用户记忆：按 ID 管理用户事实", async () => {
+  const f = fixture();
+  f.userNotebook.addFacts("999", ["事实一", "事实二"]);
+  await f.handler(f.event("/ai 忘掉用户 999 1"));
+  assert.deepEqual(f.userNotebook.facts("999"), ["事实二"]);
+  await f.handler(f.event("/ai 清空用户记忆 999"));
+  assert.deepEqual(f.userNotebook.facts("999"), []);
+});
+
+test("v0.7.0 后台整理双段输出：会话事实与用户事实分别落盘", async () => {
+  const f = fixture({
+    answer: "【会话记事本】\n- 群里最近在聊游戏\n【用户记事本】\n- 测试用户：自称很有钱",
+  });
+  for (let i = 0; i < 8; i++) {
+    await f.handler(f.event("@mybot 在吗", { sender: "999", group: true, id: 100 + i }));
+  }
+  for (let i = 0; i < 20; i++) await new Promise((r) => setImmediate(r));
+  assert.ok(f.notebook.facts("-100777").some((x) => x.includes("聊游戏")), "会话记事本应写入会话段");
+  assert.ok(f.userNotebook.facts("999").some((x) => x.includes("很有钱")), "用户记事本应写入用户段");
 });
