@@ -149,3 +149,22 @@ test("搜索 key 与 TTS 凭证可从 .env 兜底，config.json 优先", () => {
   delete process.env.SEARCH_API_KEY;
   delete process.env.TTS_API_KEY;
 });
+
+test("v0.9.0 没填 API 凭证时用内置 Desktop 公开凭证（手机号直登）", () => {
+  const id = process.env.TELEGRAM_API_ID;
+  const hash = process.env.TELEGRAM_API_HASH;
+  delete process.env.TELEGRAM_API_ID;
+  delete process.env.TELEGRAM_API_HASH;
+  try {
+    const cfg = loadConfig();
+    assert.equal(cfg.apiId, 2040);
+    assert.equal(cfg.apiCredentialSource, "builtin");
+    assert.ok(typeof cfg.apiHash === "string" && cfg.apiHash.length >= 16);
+  } finally {
+    process.env.TELEGRAM_API_ID = id;
+    process.env.TELEGRAM_API_HASH = hash;
+  }
+  const cfg2 = loadConfig();
+  assert.equal(cfg2.apiCredentialSource, "custom");
+  assert.equal(cfg2.apiId, 12345);
+});
