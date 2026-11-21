@@ -9,7 +9,7 @@ import {
   base64Tool, urlCodecTool, morseTool, hashTool, jsonTool, baseConvertTool, wordCountTool,
   unitConvertTool, dateDiffTool, dateAddTool, randomTool, passwordGenTool, colorTool,
   diceTool, coinTool, drawLotTool, tarotTool, horoscopeTool, almanacTool, worldTimeTool,
-  toolGate, executeTool, TOOL_DEFS,
+  toolGate, executeTool, TOOL_DEFS, extractTextToolCalls, stripTextToolCalls,
 } from "../src/tools.js";
 import { ToolStore } from "../src/toolstore.js";
 import { chatWithTools } from "../src/toolchat.js";
@@ -169,6 +169,95 @@ test("联网工具（桩 fetch）：汇率与 GitHub 搜索", async () => {
     const { exchangeRateTool, githubSearchTool } = await import("../src/tools.js");
     assert.match(await exchangeRateTool("USD", "CNY", 10), /72/);
     assert.match(await githubSearchTool("userbot"), /a\/b/);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
+test("文本工具调用提取：DeepSeek 式 <tool_call> 块（对象参数与字符串参数都认）", () => {
+  const calls = extractTextToolCalls('<tool_call>{"name": "get_weather", "arguments": {"city": "宜春"}}</tool_call>');
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].name, "get_weather");
+  assert.deepEqual(calls[0].args, { city: "宜春" });
+  const inner = JSON.stringify({ name: "flip_coin", arguments: JSON.stringify({ times: 2 }) });
+  const calls2 = extractTextToolCalls(`前缀 <tool_call>${inner}</tool_call> 后缀`);
+  assert.equal(calls2.length, 1);
+  assert.deepEqual(calls2[0].args, { times: 2 });
+  assert.deepEqual(extractTextToolCalls("普通回答，没有标记。"), []);
+  assert.deepEqual(extractTextToolCalls('<tool_call>不是JSON</tool_call>'), []);
+});
+
+test("文本工具调用剥离：stripTextToolCalls 去掉标记块只留正文", () => {
+  assert.equal(stripTextToolCalls('好的 <tool_call>{"name":"x","arguments":{}}</tool_call>'), "好的");
+  assert.equal(stripTextToolCalls('<tool_call>{"name":"x","arguments":{}}</tool_call>'), "");
+});
+
+test("工具门：新闻类问题应命中（v0.8.4 补漏）", () => {
+  assert.equal(toolGate("最近的新闻"), true);
+  assert.equal(toolGate("今天有什么热点"), true);
+  assert.equal(toolGate("随便聊聊"), false);
+});
+
+test("天气地理编码兜底：Open-Meteo 中文索引缺失时走 Photon 并优先城市条目（宜春实测案例）", async () => {
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async (u) => {
+    const url = String(u);
+    if (url.includes("geocoding-api.open-meteo.com")) return { ok: true, json: async () => ({}) };
+    if (url.includes("photon.komoot.io")) {
+      return {
+        ok: true,
+        json: async () => ({
+          features: [
+            { properties: { name: "宜春市", state: "江西省", type: "county" }, geometry: { coordinates: [115.01, 28.38] } },
+            { properties: { name: "宜春", state: "江西省", type: "city" }, geometry: { coordinates: [114.4, 27.83] } },
+          ],
+        }),
+      };
+    }
+    if (url.includes("api.open-meteo.com/v1/forecast")) {
+      return {
+        ok: true,
+        json: async () => ({
+          current: { temperature_2m: 18, relative_humidity_2m: 60, weather_code: 0, wind_speed_10m: 5 },
+          daily: { time: ["2026-11-21"], temperature_2m_max: [22], temperature_2m_min: [12], weather_code: [0] },
+        }),
+      };
+    }
+    throw new Error(`未预期的请求：${url}`);
+  };
+  try {
+    const { weatherTool } = await import("../src/tools.js");
+    const out = await weatherTool("宜春");
+    assert.match(out, /宜春/);
+    assert.match(out, /18°C/);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
+test("天气三级兜底：两个地理编码都落空时用 wttr.in 出天气（v0.8.5）", async () => {
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async (u) => {
+    const url = String(u);
+    if (url.includes("geocoding-api.open-meteo.com")) return { ok: true, json: async () => ({}) };
+    if (url.includes("photon.komoot.io")) return { ok: true, json: async () => ({ features: [] }) };
+    if (url.includes("wttr.in")) {
+      return {
+        ok: true,
+        json: async () => ({
+          current_condition: [{ temp_C: "17", humidity: "38", windspeedKmph: "9", weatherDesc: [{ value: "Sunny" }] }],
+          nearest_area: [{ areaName: [{ value: "宜春" }], region: [{ value: "江西" }] }],
+          weather: [{ date: "2026-11-21", maxtempC: "21", mintempC: "8", hourly: [{ weatherDesc: [{ value: "Sunny" }] }] }],
+        }),
+      };
+    }
+    throw new Error(`未预期的请求：${url}`);
+  };
+  try {
+    const { weatherTool } = await import("../src/tools.js");
+    const out = await weatherTool("宜春");
+    assert.match(out, /宜春（江西）当前：晴，17°C/);
+    assert.match(out, /2026-11-21：晴，8–21°C/);
   } finally {
     globalThis.fetch = realFetch;
   }
