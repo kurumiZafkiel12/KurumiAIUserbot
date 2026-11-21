@@ -2141,7 +2141,6 @@ return out;
       const hasPhoto = msgHasPhoto(msg);
       if (!text && !hasPhoto) return; // 纯媒体（无图无字）不处理
 
-      const senderId = msg.senderId ? msg.senderId.toString() : "";
       const chatId = (
         msg.chatId ||
         msg.peerId?.channelId ||
@@ -2149,7 +2148,21 @@ return out;
         msg.peerId?.userId ||
         ""
       ).toString();
-      if (!senderId) return;
+      // 私聊的判定：peer 是单个用户（userId）且不带群/频道 ID。
+      const isPrivateChat = Boolean(msg.peerId?.userId) && !msg.peerId?.chatId && !msg.peerId?.channelId;
+      let senderId = msg.senderId ? msg.senderId.toString() : "";
+      // 匿名发言（群管理员开匿名、以群身份发言等）：Telegram 不给发送者 ID（from_id 为空），
+      // 以前在这里直接丢弃，表现为「马甲用户不回复」。群里给一个按群合成的匿名身份、
+      // 当普通用户处理（无任何权限）；私聊没有这种情况，照旧丢弃。
+      let anonymousSender = false;
+      if (!senderId) {
+        if (isPrivateChat) return;
+        // 带签名的匿名发言按签名区分（各管理通常签不同名字）；没签名的共用一个匿名身份。
+        // 签名是自由文本、可改可冒充，只作软区分，不当身份凭证。
+        const sig = String(msg.postAuthor || "").trim().slice(0, 64);
+        senderId = sig ? `anon:${chatId}:${sig}` : `anon:${chatId}`;
+        anonymousSender = true;
+      }
 
       if (blacklist.has(senderId)) return;
 
@@ -2163,14 +2176,13 @@ return out;
         return;
       }
 
-      // 私聊的判定：peer 是单个用户（userId）且不带群/频道 ID。
-      const isPrivateChat = Boolean(msg.peerId?.userId) && !msg.peerId?.chatId && !msg.peerId?.channelId;
-
       // 发言者显示名懒加载（记录、身份段、历史标签共用，只取一次）。
       let senderObjPromise = null;
       const getSpeakerName = async () => {
         if (!senderObjPromise) {
           senderObjPromise = (async () => {
+            // 匿名发言没有真实发送者对象：有签名用签名，否则就叫匿名成员。
+            if (anonymousSender) return String(msg.postAuthor || "").trim() || "匿名成员";
             try {
               if (typeof event.getSender === "function") {
                 const sender = await event.getSender();
