@@ -110,3 +110,17 @@ test("speakerAssertion：三档各给结论，且绝不带任何数字 ID", () =
     assert.ok(!/\d/.test(s), `断言段不应出现数字：${s}`);
   }
 });
+
+test("访客：admins 门禁下可私聊，身份仍是普通用户", async () => {
+  const { canUsePrivateChat, isGuest, normalizeGuestIds, roleOf } = await import("../src/permissions.js");
+  const cfg = { ownerId: "1", adminIds: ["2"], guestIds: ["3"], privateChat: "admins" };
+  assert.equal(canUsePrivateChat("3", cfg), true);
+  assert.equal(canUsePrivateChat("4", cfg), false);
+  assert.equal(isGuest("3", cfg), true);
+  assert.equal(isGuest("2", cfg), false);
+  assert.equal(roleOf("3", cfg), "user");
+  assert.deepEqual(normalizeGuestIds(["3", 3, " 4 ", ""]), ["3", "4"]);
+  assert.deepEqual(normalizeGuestIds(null), []);
+  // all 模式下人人可私聊，访客名单不影响
+  assert.equal(canUsePrivateChat("4", { ...cfg, privateChat: "all" }), true);
+});
