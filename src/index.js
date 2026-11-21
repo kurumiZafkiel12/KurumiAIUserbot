@@ -58,7 +58,6 @@ async function main() {
     if (!cfg.nameClock) return;
     stopClock = startNameClock(client, {
       firstName: (cfg.customName && cfg.customName.first) || cfg.namePrefix,
-      lastName: (cfg.customName && cfg.customName.last) || "",
       timezone: cfg.timezone,
       logger,
     });
