@@ -16,6 +16,7 @@ import { UsageStats } from "./usagestats.js";
 import { GroupRecords } from "./records.js";
 import { createHandler } from "./handlers.js";
 import { startNameClock } from "./nameclock.js";
+import { ToolStore, startReminderScheduler } from "./toolstore.js";
 
 const SESSION_PATH = path.resolve(".ai-session");
 
@@ -104,6 +105,8 @@ async function main() {
   const usageStats = new UsageStats(path.resolve("usage.json"));
   // 群聊天记录落盘在 records.json：开启记录的群的消息按群环形保存。
   const records = new GroupRecords(path.resolve("records.json"));
+  // 工具状态落盘在 reminders.json：定时提醒与待办清单，重启不丢。
+  const toolStore = new ToolStore(path.resolve("reminders.json"));
   const handler = createHandler({
     client,
     config: runtime.config,
@@ -118,6 +121,7 @@ async function main() {
     state,
     usageStats,
     records,
+    toolStore,
     logger,
     startedAt: Date.now(),
     selfId: String(me.id),
@@ -130,6 +134,9 @@ async function main() {
   client.addEventHandler(handler, new NewMessage({}));
 
   applyNameClock(effectiveConfig);
+
+  // 定时提醒调度：到点往原会话发提醒消息（进程生命周期内常驻）。
+  startReminderScheduler(client, toolStore, logger);
 
   let shuttingDown = false;
   async function shutdown(signal) {
