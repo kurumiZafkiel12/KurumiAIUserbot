@@ -36,12 +36,13 @@ export class ToolStore {
     fs.renameSync(tmp, this.filePath);
   }
 
-  addReminder({ chatId, senderId, senderName, text, at }) {
+  addReminder({ chatId, senderId, senderName, senderAccessHash, text, at }) {
     const item = {
       id: `${Date.now()}-${Math.floor(Math.random() * 1e6)}`,
       chatId: String(chatId),
       senderId: String(senderId),
       senderName: String(senderName || ""),
+      senderAccessHash: String(senderAccessHash || ""),
       text: String(text),
       at: String(at),
     };
@@ -111,6 +112,42 @@ export function reminderFireText(r) {
 }
 
 /**
+ * 把设定者解析成 InputUser（构建 MentionName 实体用）。GramJS 的实体缓存是
+ * 每连接一份、冷启动为空，v0.9.16 只靠到点时 getInputEntity 直查，缓存没有就
+ * 静默失败（群内实测 @ 不出来）。三级兜底：① 设定时捕获落盘的 accessHash；
+ * ② 实体缓存直查；③ 扫原会话近期消息把设定者实体预热进缓存再查。
+ * 都失败返回 null（调度器退回纯文本并记日志）。
+ */
+export async function resolveReminderInputUser(client, r) {
+  const uid = String(r.senderId || "");
+  if (!uid || !client) return null;
+  if (r.senderAccessHash) {
+    try {
+      const ah = BigInt(r.senderAccessHash);
+      if (ah !== BigInt(0)) return new Api.InputUser({ userId: BigInt(uid), accessHash: ah });
+    } catch {
+      // accessHash 损坏就落到下面的查缓存路径。
+    }
+  }
+  const fromPeer = (p) =>
+    p && p.userId !== undefined
+      ? new Api.InputUser({ userId: p.userId, accessHash: p.accessHash || BigInt(0) })
+      : null;
+  try {
+    const u = fromPeer(await client.getInputEntity(uid));
+    if (u) return u;
+  } catch {
+    // 缓存里没有：预热再试。
+  }
+  try {
+    await client.getMessages(r.chatId, { limit: 50 });
+    return fromPeer(await client.getInputEntity(uid));
+  } catch {
+    return null;
+  }
+}
+
+/**
  * 提醒调度器：每 30 秒检查一次到点提醒，发到原会话。
  * 发送失败只记日志并放弃该条（不无限重试刷屏）。
  * @returns {Function} 停止函数
@@ -124,32 +161,29 @@ export function startReminderScheduler(client, store, logger) {
       const text = reminderFireText(r);
       try {
         // 真 @：附 MessageEntityMentionName 实体（offset/length 按 UTF-16 计数，
-        // JS 字符串 length 即 UTF-16 单元数）；解析不到用户实体时退回纯文本。
+        // JS 字符串 length 即 UTF-16 单元数）；用户实体三级解析见 resolveReminderInputUser。
         let entities;
-        if (r.senderId) {
-          try {
-            const peer = await client.getInputEntity(r.senderId);
-            if (peer && peer.userId !== undefined) {
-              entities = [
-                new Api.MessageEntityMentionName({
-                  offset: 0,
-                  length: reminderMentionLabel(r).length,
-                  userId: new Api.InputUser({ userId: peer.userId, accessHash: peer.accessHash || BigInt(0) }),
-                }),
-              ];
-            }
-          } catch {
-            entities = undefined;
-          }
+        const inputUser = await resolveReminderInputUser(client, r).catch(() => null);
+        if (inputUser) {
+          entities = [
+            new Api.MessageEntityMentionName({
+              offset: 0,
+              length: reminderMentionLabel(r).length,
+              userId: inputUser,
+            }),
+          ];
         }
         try {
           await client.sendMessage(r.chatId, { message: text, formattingEntities: entities });
         } catch (err) {
           if (!entities) throw err;
           // 带实体发送失败（多半是 accessHash 失效）：退回纯文本，保证提醒本身送达。
+          entities = undefined;
           await client.sendMessage(r.chatId, { message: text });
         }
-        logger.info(`已发送提醒（chat=${r.chatId}）：${r.text}`);
+        // 是否带上 @ 必须进日志：v0.9.16 静默退回纯文本、日志还报成功，问题无从定位。
+        if (entities) logger.info(`已发送提醒（带 @）（chat=${r.chatId}）：${r.text}`);
+        else logger.info(`已发送提醒（未带上 @：设定者实体解析失败）（chat=${r.chatId}）：${r.text}`);
       } catch (err) {
         logger.error(`发送提醒失败（chat=${r.chatId}）：${err.message}`);
       }
