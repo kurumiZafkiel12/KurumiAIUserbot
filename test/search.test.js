@@ -8,6 +8,8 @@ buildSerperRequest,
 parseSerperResults,
 buildTavilyRequest,
 parseTavilyResults,
+buildBraveSearchUrl,
+parseBraveMarkdown,
 buildBingSearchUrl,
 decodeBingRedirect,
 parseBingMarkdown,
@@ -123,4 +125,29 @@ assert.ok(!text.includes("Read more"));
 assert.ok(!text.includes("字体文件"));
 assert.ok(!text.includes("必应首页"));
 assert.deepEqual(parseBingMarkdown(""), { text: "", urls: [] });
+});
+
+test("Lightpanda 线：Brave 地址构造与 Brave Markdown 解析", () => {
+assert.ok(buildBraveSearchUrl("Spx 收盘价").includes("search.brave.com/search?q=Spx%20"));
+const md = [
+"![🌐](https://imgs.search.brave.com/xxx/rs:fit:32:32)",
+"CNBC",
+"https://cnbc.com › quotes › .SPX ",
+"Check out S&P 500 INDEX's stock price \\(.SPX\\) in real time",
+"[https://search.brave.com/go/v1#AekwEA](https://search.brave.com/go/v1#AekwEA)",
+"1 day ago \\- Get S&P 500 Index \\(.SPX:INDEX\\) real\\-time stock quotes, news, price and financial information from CNBC.",
+"![🌐](https://imgs.search.brave.com/yyy/rs:fit:32:32)",
+"Futubull",
+"https://futunn.com › index › .SPX\\-US ",
+"标普500指数\\(.SPX\\) 股价、新闻、报价和图表 \\- 富途牛牛",
+"[https://search.brave.com/go/v1#Bbekw](https://search.brave.com/go/v1#Bbekw)",
+"纳指一周蒸发逾4万亿美元，市场开始憧憬AI产业链超跌反弹",
+].join("\n");
+const { text, urls } = parseBraveMarkdown(md);
+assert.deepEqual(urls, ["https://cnbc.com/quotes/.SPX", "https://futunn.com/index/.SPX-US"]);
+assert.ok(text.includes("1. Check out S&P 500 INDEX's stock price (.SPX) in real time"));
+assert.ok(text.includes("Get S&P 500 Index (.SPX:INDEX) real-time stock quotes"));
+assert.ok(!text.includes("1 day ago"));
+assert.ok(text.includes("2. 标普500指数(.SPX) 股价、新闻、报价和图表 - 富途牛牛"));
+assert.deepEqual(parseBraveMarkdown(""), { text: "", urls: [] });
 });
