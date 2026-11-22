@@ -9,6 +9,8 @@ parseSerperResults,
 buildTavilyRequest,
 parseTavilyResults,
 cleanSearchQuery,
+buildYahooSearchUrl,
+parseYahooMarkdown,
 buildBraveSearchUrl,
 parseBraveMarkdown,
 buildBingSearchUrl,
@@ -169,4 +171,40 @@ assert.deepEqual(planSearch("介绍下kazumi", { provider: "lightpanda" }), { mo
 assert.deepEqual(planSearch("去网上搜", { provider: "lightpanda", fallbackQuery: "介绍下kazumi" }), { mode: "lightpanda", query: "kazumi" });
 assert.equal(planSearch("去网上搜", { provider: "lightpanda" }), null);
 assert.deepEqual(planSearch("去网上搜", { hasKey: true, fallbackQuery: "介绍下kazumi" }), { mode: "serper", query: "kazumi" });
+});
+
+test("Yahoo 地址构造", () => {
+assert.equal(buildYahooSearchUrl("kazumi"), "https://search.yahoo.com/search?p=kazumi");
+});
+
+test("parseYahooMarkdown：裸链接锚点解析，过滤 Yahoo 自家 Scout 区块", () => {
+const md = [
+"## Search Results",
+"1. ",
+"kazumi.apphttps://kazumi.app",
+"",
+"### Kazumi 官网 \\- 跨平台番剧采集与在线观看应用",
+"[https://kazumi.app/](https://kazumi.app/)",
+"",
+"**Kazumi** 是使用 Flutter 开发的基于自定义规则的番剧采集与在线观看程序，支持弹幕。",
+"2. ",
+"example.comhttps://example.com",
+"",
+"### Example Page",
+"[https://example.com/](https://example.com/)",
+"",
+"Example snippet line.",
+"3. ",
+"",
+"### People also ask Yahoo Scout",
+"",
+"#### What is Kazumi's real name?",
+"[https://search.yahoo.com/scout/chat?p=kazumi](https://search.yahoo.com/scout/chat?p=kazumi)",
+].join("\n");
+const r = parseYahooMarkdown(md);
+assert.equal(r.urls.length, 2);
+assert.equal(r.urls[0], "https://kazumi.app/");
+assert.ok(r.text.includes("Kazumi 官网 - 跨平台番剧采集与在线观看应用"), r.text);
+assert.ok(r.text.includes("Flutter"), r.text);
+assert.ok(!r.text.includes("scout"), r.text);
 });
