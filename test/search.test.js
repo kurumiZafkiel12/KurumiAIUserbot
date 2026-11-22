@@ -233,3 +233,11 @@ assert.equal(sanitizeRewrittenQuery("", "兜底"), "兜底");
 assert.equal(sanitizeRewrittenQuery("好", "兜底"), "兜底");
 assert.equal(sanitizeRewrittenQuery("x".repeat(90), "兜底"), "兜底");
 });
+
+test("planSearch 短消息续聊不搜（v0.9.18）：有历史的 4 字内短回复跳过搜索", () => {
+assert.equal(planSearch("抽", { provider: "lightpanda", hasHistory: true }), null);
+assert.equal(planSearch("再来一个", { provider: "lightpanda", hasHistory: true }), null);
+assert.ok(planSearch("抽", { provider: "lightpanda" }), "无历史的首条短消息照常搜");
+assert.ok(planSearch("X上的玉米须有没有黑历史", { provider: "lightpanda", hasHistory: true }), "长问题照常搜");
+assert.ok(planSearch("联网搜索 抽", { provider: "lightpanda", hasHistory: true }), "显式联网搜索优先放行");
+});
