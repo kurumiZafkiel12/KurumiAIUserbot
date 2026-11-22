@@ -2091,7 +2091,7 @@ return out;
           text = await chatWithTools(
             entry,
             messages,
-            { chatId, senderId, senderName: speakerName, timezone: config.timezone, logger, outbox: toolOutbox, store: toolStore, imageSearch: imageSearchImpl },
+            { chatId, senderId, senderName: speakerName, timezone: config.timezone, logger, outbox: toolOutbox, store: toolStore, imageSearch: imageSearchImpl, client },
             (u) => {
               seenUsage = u;
             },
@@ -2145,7 +2145,7 @@ return out;
     {
       const leaked = extractTextToolCalls(answer);
       if (leaked.length > 0 && usedEntry) {
-        const toolCtx = { chatId, senderId, senderName: speakerName, timezone: config.timezone, logger, outbox: toolOutbox, store: toolStore, imageSearch: imageSearchImpl };
+        const toolCtx = { chatId, senderId, senderName: speakerName, timezone: config.timezone, logger, outbox: toolOutbox, store: toolStore, imageSearch: imageSearchImpl, client };
         const resultLines = [];
         for (const call of leaked) {
           try {
@@ -2313,7 +2313,7 @@ return out;
             try {
               if (typeof event.getSender === "function") {
                 const sender = await event.getSender();
-                if (sender) return String(sender.firstName || sender.username || "").trim();
+                if (sender) return String([sender.firstName, sender.lastName].filter(Boolean).join(" ") || sender.username || "").trim();
               }
             } catch {
               // 取不到名字不影响主流程。
