@@ -48,6 +48,8 @@ buildBraveSearchUrl,
 parseBraveMarkdown,
 buildBingSearchUrl,
 parseBingMarkdown,
+buildYahooSearchUrl,
+parseYahooMarkdown,
 formatSearchContext,
 maskSearchKey,
 } from "./search.js";
@@ -1964,9 +1966,11 @@ return out;
           if (cached && Date.now() - cached.at < SEARCH_CACHE_TTL_MS) {
             question = formatSearchContext(plan.mode, cached.text, question);
           } else {
-            // 引擎顺序：Brave 优先（自有索引，中英混排问题更可靠），解析不出再用 Bing 兜底。
+            // 引擎顺序：Yahoo 优先（Bing 索引、机房 IP 不设墙），Brave 次之
+            // （自有索引好但高频抓取会弹 PoW 验证），Bing 兜底（结果质量不稳定）。
             let result = { text: "", urls: [] };
             for (const attempt of [
+              async () => parseYahooMarkdown(await lightpandaFetch(config.lightpandaBin, buildYahooSearchUrl(plan.query))),
               async () => parseBraveMarkdown(await lightpandaFetch(config.lightpandaBin, buildBraveSearchUrl(plan.query))),
               async () => parseBingMarkdown(await lightpandaFetch(config.lightpandaBin, buildBingSearchUrl(plan.query))),
             ]) {
@@ -1981,7 +1985,7 @@ return out;
               question = formatSearchContext(plan.mode, result.text, question);
               if (searchCache.size > 100) searchCache.clear();
               searchCache.set(cacheKey, { text: result.text, at: Date.now() });
-            } else logger.error("搜索失败：Lightpanda 两条引擎都未解析出结果");
+            } else logger.error("搜索失败：Lightpanda 三条引擎都未解析出结果");
           }
         } else {
           const req =
