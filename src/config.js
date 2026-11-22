@@ -8,10 +8,13 @@ import { DEFAULT_PROVIDER } from "./triggers.js";
 import { normalizeAdminIds, normalizeGuestIds } from "./permissions.js";
 import { normalizeVisionPool } from "./vision.js";
 import { DEFAULT_SERPER_BASE, DEFAULT_TAVILY_BASE } from "./search.js";
+import { rootPath } from "./rootdir.js";
 
-loadDotenv();
+// .env 与 config.json 都锚定项目根目录（v0.9.1）：从任何目录启动都读同一份，
+// 不再受进程启动目录影响（此前按 cwd 读，换个目录启动就像没保存过）。
+loadDotenv({ path: rootPath(".env") });
 
-const CONFIG_PATH = path.resolve("config.json");
+export const CONFIG_PATH = rootPath("config.json");
 
 export const DEFAULT_SYSTEM_PROMPT =
   "你是一个友好的 AI 助手，在 Telegram 里回答问题。回答简洁、准确，用提问者的语言回复。";

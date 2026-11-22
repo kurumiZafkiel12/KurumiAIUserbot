@@ -4,6 +4,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import util from "node:util";
+import { rootPath } from "./rootdir.js";
 
 function stamp(date = new Date()) {
   return date.toISOString();
@@ -15,10 +16,10 @@ function dayFile(date = new Date()) {
 
 /**
  * 创建日志器。
- * @param {string} dir 日志目录（相对进程工作目录）
+ * @param {string} dir 日志目录（相对路径按项目根目录解析，不受启动目录影响）
  */
 export function createLogger(dir = "logs") {
-  const logDir = path.resolve(dir);
+  const logDir = path.isAbsolute(dir) ? dir : rootPath(dir);
   try {
     fs.mkdirSync(logDir, { recursive: true });
   } catch {

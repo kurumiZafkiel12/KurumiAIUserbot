@@ -1,6 +1,6 @@
 // handlers 主链路回归测试（审计 K062 系列）：真实 createHandler/ProviderPool +
-// 假 Telegram/模型。必须在 import 源码前 chdir 到临时目录——config.js 的
-// CONFIG_PATH 在模块加载时按 cwd 定格，号主命令落盘不能污染仓库根目录。
+// 假 Telegram/模型。必须在 import 源码前把 KURUMI_ROOT_DIR 指到临时目录——
+// config.json 锚定项目根目录，号主命令落盘不能污染仓库根目录。
 
 import fs from "node:fs";
 import os from "node:os";
@@ -9,6 +9,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "userbot-handlers-test-"));
+process.env.KURUMI_ROOT_DIR = tmpRoot;
 process.chdir(tmpRoot);
 
 const { createHandler } = await import("../src/handlers.js");

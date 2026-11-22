@@ -1,7 +1,6 @@
 // 入口：组装配置、日志、提供方池与消息处理，连接 Telegram 并开始监听。
 
 import fs from "node:fs";
-import path from "node:path";
 import { TelegramClient } from "telegram";
 import { StringSession } from "telegram/sessions/index.js";
 import { NewMessage } from "telegram/events/index.js";
@@ -17,8 +16,9 @@ import { GroupRecords } from "./records.js";
 import { createHandler } from "./handlers.js";
 import { startNameClock } from "./nameclock.js";
 import { ToolStore, startReminderScheduler } from "./toolstore.js";
+import { rootPath } from "./rootdir.js";
 
-const SESSION_PATH = path.resolve(".ai-session");
+const SESSION_PATH = rootPath(".ai-session");
 
 async function main() {
   const logger = createLogger();
@@ -91,26 +91,26 @@ async function main() {
   }
 
   const store = new ConversationStore(effectiveConfig.contextSize);
-  // 记事本与用户档案落盘在运行目录，重启不丢；botNames 让记事本过滤「以机器人为主语」的条目。
-  const notebook = new Notebook(path.resolve("facts.json"), {
+  // 记事本与用户档案落盘在项目根目录，重启不丢；botNames 让记事本过滤「以机器人为主语」的条目。
+  const notebook = new Notebook(rootPath("facts.json"), {
     botNames: [effectiveConfig.namePrefix, username],
   });
   // 用户记事本：按用户 ID 记的长期事实（userfacts.json），跨所有群与私聊通用。
-  const userNotebook = new Notebook(path.resolve("userfacts.json"), {
+  const userNotebook = new Notebook(rootPath("userfacts.json"), {
     botNames: [effectiveConfig.namePrefix, username],
   });
-  const profiles = new UserProfiles(path.resolve("profiles.json"));
+  const profiles = new UserProfiles(rootPath("profiles.json"));
   // 运行时状态（全局暂停开关）落盘在 state.json：重启后保持关闭，直到创建者发 /ai 开启。
-  const state = new RuntimeState(path.resolve("state.json"));
+  const state = new RuntimeState(rootPath("state.json"));
   if (state.isPaused()) {
     logger.warn("当前处于全局关闭状态（state.json 记录了 paused），只响应号主命令；发 /ai 开启 恢复回复。");
   }
   // Token 用量统计落盘在 usage.json：按天按模型累计，跨天归零。
-  const usageStats = new UsageStats(path.resolve("usage.json"));
+  const usageStats = new UsageStats(rootPath("usage.json"));
   // 群聊天记录落盘在 records.json：开启记录的群的消息按群环形保存。
-  const records = new GroupRecords(path.resolve("records.json"));
+  const records = new GroupRecords(rootPath("records.json"));
   // 工具状态落盘在 reminders.json：定时提醒与待办清单，重启不丢。
-  const toolStore = new ToolStore(path.resolve("reminders.json"));
+  const toolStore = new ToolStore(rootPath("reminders.json"));
   const handler = createHandler({
     client,
     config: runtime.config,

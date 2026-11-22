@@ -1,5 +1,5 @@
-// 配置加载的单元测试：在临时目录里放 config.json，切 cwd 后动态 import config.js。
-// 注意 config.js 的 CONFIG_PATH 在模块加载时按 cwd 解析，所以必须先 chdir 再 import；
+// 配置加载的单元测试：在临时目录里放 config.json，动态 import config.js。
+// v0.9.1 起路径锚定项目根目录：用 KURUMI_ROOT_DIR 把根指到临时目录（与 cwd 无关）；
 // 每个场景改写同一个 config.json 文件后重新调 loadConfig（它每次都重读文件）。
 
 import test from "node:test";
@@ -10,6 +10,7 @@ import path from "node:path";
 
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), "userbot-config-"));
 const configFile = path.join(dir, "config.json");
+process.env.KURUMI_ROOT_DIR = dir;
 process.chdir(dir);
 process.env.TELEGRAM_API_ID = "12345";
 process.env.TELEGRAM_API_HASH = "hash-for-test";

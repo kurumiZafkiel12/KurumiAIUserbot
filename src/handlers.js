@@ -14,6 +14,7 @@ isHelpQuery,
 } from "./triggers.js";
 import { formatNowLine} from "./time.js";
 import { saveConfigJson} from "./config.js";
+import { rootPath } from "./rootdir.js";
 import { balanceReport} from "./billing.js";
 import { Notebook, parseConsolidationSections} from "./notebook.js";
 import { UserProfiles, extractCallName} from "./profiles.js";
@@ -925,7 +926,7 @@ return out;
 
     if (cmd === "日志") {
       const day = new Date().toISOString().slice(0, 10);
-      const file = path.resolve("logs", `bot-${day}.log`);
+      const file = rootPath("logs", `bot-${day}.log`);
       if (!fs.existsSync(file)) {
         return reply(msg, "今天还没有日志。");
       }

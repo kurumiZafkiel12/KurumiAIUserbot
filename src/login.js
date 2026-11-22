@@ -6,13 +6,13 @@
 // 注意：发码和验码必须在同一次运行里完成——中途退出再重来，验证码会失效（PHONE_CODE_EXPIRED）。
 
 import fs from "node:fs";
-import path from "node:path";
 import { TelegramClient } from "telegram";
 import { StringSession } from "telegram/sessions/index.js";
 import input from "input";
 import { loadConfig } from "./config.js";
+import { rootPath } from "./rootdir.js";
 
-const SESSION_PATH = path.resolve(".ai-session");
+const SESSION_PATH = rootPath(".ai-session");
 
 function printPhoneWarning() {
   console.log("");
