@@ -130,7 +130,7 @@ export function loadConfig() {
   }
 
   // 提供方覆盖：config.json 的 providerOverrides 按名字合并到对应提供方定义上
-  // （含 .env 的 default）。号主用 /ai 换key、/ai 禁用api 等命令写这个字段，在线生效。
+  // （含 .env 的 default）。号主用 /ai 换key、/ai 换模型、/ai 禁用api 等命令写这个字段，在线生效。
   const providerOverrides =
     json.providerOverrides && typeof json.providerOverrides === "object" ? json.providerOverrides : {};
   const keyProp = "api" + "Key";
@@ -138,6 +138,7 @@ export function loadConfig() {
     const ov = providerOverrides[p.name];
     if (!ov || typeof ov !== "object") continue;
     if (typeof ov[keyProp] === "string" && ov[keyProp]) p[keyProp] = ov[keyProp];
+    if (typeof ov.model === "string" && ov.model) p.model = ov.model;
     if (ov.disabled === true) p.disabled = true;
     else if (ov.disabled === false) p.disabled = false;
   }
