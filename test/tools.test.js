@@ -11,8 +11,9 @@ import {
   diceTool, coinTool, drawLotTool, tarotTool, horoscopeTool, almanacTool, worldTimeTool,
   toolGate, executeTool, TOOL_DEFS, extractTextToolCalls, stripTextToolCalls,
   resolveStockSymbol, parseYahooChart, parseTencentQuote,
+  addReminderTool,
 } from "../src/tools.js";
-import { ToolStore } from "../src/toolstore.js";
+import { ToolStore, reminderFireText } from "../src/toolstore.js";
 import { chatWithTools } from "../src/toolchat.js";
 
 test("base64 编解码往返", () => {
@@ -317,4 +318,32 @@ test("stock_quote：工具门命中股价类问题且工具已注册", () => {
   assert.equal(toolGate("英伟达股价怎么样"), true);
   assert.equal(toolGate("恒生指数今天多少点"), true);
   assert.ok(TOOL_DEFS.some((t) => t.name === "stock_quote"));
+});
+
+test("提醒修复（v0.9.15）：工具门命中「定时提醒，1分钟后艾特我」；in_seconds 由代码算时刻；到点文案带 @", () => {
+  assert.equal(toolGate("定时提醒，1分钟后艾特我"), true);
+  assert.equal(toolGate("过两小时提醒我开会"), true);
+  let saved = null;
+  const ctx = {
+    chatId: -1001,
+    senderId: 42,
+    senderName: "柠檬",
+    timezone: "Asia/Tokyo",
+    store: {
+      addReminder: (o) => {
+        saved = o;
+        return o;
+      },
+    },
+  };
+  const before = Date.now();
+  const out = addReminderTool({ text: "艾特我", in_seconds: 60 }, ctx);
+  assert.ok(saved, "应写入 store");
+  assert.equal(saved.senderName, "柠檬");
+  const atMs = new Date(saved.at).getTime();
+  assert.ok(atMs >= before + 55_000 && atMs <= Date.now() + 65_000, `at 应约为 60 秒后，实际 ${saved.at}`);
+  assert.ok(out.includes("提醒已设"), out);
+  const fire = reminderFireText({ senderId: "42", senderName: "柠檬", text: "艾特我" });
+  assert.equal(fire, "[柠檬](tg://user?id=42) 提醒：艾特我");
+  assert.equal(reminderFireText({ senderId: "42", senderName: "", text: "x" }), "[你](tg://user?id=42) 提醒：x");
 });
