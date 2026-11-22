@@ -13,7 +13,7 @@ import {
   resolveStockSymbol, parseYahooChart, parseTencentQuote,
   addReminderTool,
 } from "../src/tools.js";
-import { ToolStore, reminderFireText } from "../src/toolstore.js";
+import { ToolStore, reminderFireText, resolveReminderInputUser } from "../src/toolstore.js";
 import { chatWithTools } from "../src/toolchat.js";
 
 test("base64 编解码往返", () => {
@@ -320,7 +320,7 @@ test("stock_quote：工具门命中股价类问题且工具已注册", () => {
   assert.ok(TOOL_DEFS.some((t) => t.name === "stock_quote"));
 });
 
-test("提醒修复（v0.9.15）：工具门命中「定时提醒，1分钟后艾特我」；in_seconds 由代码算时刻；到点文案带 @", () => {
+test("提醒修复（v0.9.15）：工具门命中「定时提醒，1分钟后艾特我」；in_seconds 由代码算时刻；到点文案带 @", async () => {
   assert.equal(toolGate("定时提醒，1分钟后艾特我"), true);
   assert.equal(toolGate("过两小时提醒我开会"), true);
   let saved = null;
@@ -337,7 +337,7 @@ test("提醒修复（v0.9.15）：工具门命中「定时提醒，1分钟后艾
     },
   };
   const before = Date.now();
-  const out = addReminderTool({ text: "艾特我", in_seconds: 60 }, ctx);
+  const out = await addReminderTool({ text: "艾特我", in_seconds: 60 }, ctx);
   assert.ok(saved, "应写入 store");
   assert.equal(saved.senderName, "柠檬");
   const atMs = new Date(saved.at).getTime();
@@ -346,4 +346,28 @@ test("提醒修复（v0.9.15）：工具门命中「定时提醒，1分钟后艾
   const fire = reminderFireText({ senderId: "42", senderName: "柠檬", text: "艾特我" });
   assert.equal(fire, "柠檬 提醒：艾特我");
   assert.equal(reminderFireText({ senderId: "42", senderName: "", text: "x" }), "你 提醒：x");
+});
+
+test("resolveReminderInputUser（v0.9.17）：落盘 accessHash 优先；缓存直查；扫会话预热；全失败返回 null", async () => {
+  // ① 落盘 hash：不碰 client 就能构建
+  const noTouch = { getInputEntity: async () => { throw new Error("不应被调用"); }, getMessages: async () => { throw new Error("不应被调用"); } };
+  const u1 = await resolveReminderInputUser(noTouch, { senderId: "42", senderAccessHash: "777", chatId: "-1001" });
+  assert.equal(String(u1.userId), "42");
+  assert.equal(String(u1.accessHash), "777");
+  // ② 缓存直查
+  const cached = { getInputEntity: async () => ({ userId: BigInt(42), accessHash: BigInt(888) }), getMessages: async () => [] };
+  const u2 = await resolveReminderInputUser(cached, { senderId: "42", senderAccessHash: "", chatId: "-1001" });
+  assert.equal(String(u2.accessHash), "888");
+  // ③ 直查失败 → 扫会话预热后成功
+  let calls = 0;
+  const cold = {
+    getInputEntity: async () => { calls += 1; if (calls === 1) throw new Error("缓存没有"); return { userId: BigInt(42), accessHash: BigInt(999) }; },
+    getMessages: async () => [],
+  };
+  const u3 = await resolveReminderInputUser(cold, { senderId: "42", senderAccessHash: "", chatId: "-1001" });
+  assert.equal(String(u3.accessHash), "999");
+  assert.equal(calls, 2);
+  // ④ 全失败 → null（调度器退回纯文本）
+  const dead = { getInputEntity: async () => { throw new Error("没有"); }, getMessages: async () => { throw new Error("没有"); } };
+  assert.equal(await resolveReminderInputUser(dead, { senderId: "42", senderAccessHash: "", chatId: "-1001" }), null);
 });
