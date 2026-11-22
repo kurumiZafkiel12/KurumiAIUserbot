@@ -248,7 +248,7 @@ return { text: text.trim(), urls: picked.map((r) => r.url) };
 /** 把搜索结果拼进问题文本（模型看到的是带出处材料的问题）。 */
 export function formatSearchContext(mode, resultText, question) {
 const label = mode === "tavily"? "联网搜索结果": "搜索结果";
-return `【${label}】\n${resultText}\n\n【用户的问题】\n${question}`;
+return `【${label}】\n${resultText}\n\n【说明】优先依据上面资料回答，资料没覆盖的不要编；标注来源时写完整链接（带 https://）并与前后文字留空格，不要把域名用括号贴在名称后面。\n\n【用户的问题】\n${question}`;
 }
 
 /** 搜索 key 打码展示：只露最后 4 位；没配返回空串（调用方据此提示未配置）。 */
