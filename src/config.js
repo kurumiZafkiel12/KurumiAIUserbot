@@ -214,6 +214,15 @@ export function loadConfig() {
       (typeof json.searchApiKey === "string" && json.searchApiKey.trim()) || (process.env.SEARCH_API_KEY || "").trim(),
     searchApiBase: (process.env.SEARCH_API_BASE || DEFAULT_SERPER_BASE).trim(),
     searchApiBase2: (process.env.SEARCH_API_BASE_2 || DEFAULT_TAVILY_BASE).trim(),
+    // 搜索后端：searchProvider 为 "lightpanda" 时走本机 Lightpanda 抓 Bing（免 key、无额度），
+    // 其余情况走上面的 key 接口线。config.json 优先，.env 的 SEARCH_PROVIDER 兜底。
+    searchProvider:
+      (typeof json.searchProvider === "string" && json.searchProvider.trim().toLowerCase()) ||
+      (process.env.SEARCH_PROVIDER || "").trim().toLowerCase(),
+    lightpandaBin:
+      (typeof json.lightpandaBin === "string" && json.lightpandaBin.trim()) ||
+      (process.env.LIGHTPANDA_BIN || "").trim() ||
+      "/opt/lightpanda/lightpanda",
     // 号主改名（/ai 改名）：只存 {first}。号主定版：姓氏位只能是时钟时间，
     // 旧配置里存过的 last 一律忽略、不再读入。
     customName:
