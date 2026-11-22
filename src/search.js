@@ -5,8 +5,10 @@
 // 没有配搜索 key 时接口线不启用。
 // 第三条线（v0.9.6）：searchProvider=lightpanda 时走本机 Lightpanda 抓搜索引擎结果页，
 // 免 key、无额度；执行（拉起 Lightpanda 进程）在 handlers 里，结果页解析在本文件。
-// 引擎顺序（v0.9.8）：Brave 优先、Bing 兜底——Bing 对机房 IP + 中英混排问题
-// （如「Spx收盘价」）会给不相关结果，Brave 自有索引在这类问题上可靠得多。
+// 引擎顺序（v0.9.13）：Yahoo → Brave → Bing。Yahoo（Bing 索引）对机房 IP
+// 不设墙、中英混排可靠（实测 kazumi 首条官网、Spx 收盘价给 investing/富途）；
+// Brave 自有索引好，但对高频抓取会弹 PoW 人机验证（2026-11-22 晚已实测被弹）；
+// Bing 兜底（同 IP 结果质量不稳定，时好时坏）。
 // 请求构造与结果解析都是纯函数，可单测。
 
 export const DEFAULT_SERPER_BASE = "https://google.serper.dev/search";
@@ -158,6 +160,63 @@ export const BRAVE_SEARCH_BASE = "https://search.brave.com/search";
 /** 构造 Brave 搜索页地址（Lightpanda 抓取用）。 */
 export function buildBraveSearchUrl(query) {
 return `${BRAVE_SEARCH_BASE}?q=${encodeURIComponent(String(query || ""))}`;
+}
+
+export const YAHOO_SEARCH_BASE = "https://search.yahoo.com/search";
+
+/** 构造 Yahoo 搜索页地址（Lightpanda 抓取用）。 */
+export function buildYahooSearchUrl(query) {
+return `${YAHOO_SEARCH_BASE}?p=${encodeURIComponent(String(query || ""))}`;
+}
+
+const YAHOO_ANCHOR_RE = /^\[(https?:\/\/[^\]\s]+)\]\((https?:\/\/[^)\s]+)\)\s*$/;
+
+/**
+ * 解析 Lightpanda 抓回的 Yahoo 结果页 Markdown。
+ * 每条结果以「文字与地址相同的裸链接行」为锚：往上最近的 ### 行是标题，
+ * 往下到下个结果锚点/标题前是摘要（跳过 "- [子链接]" 行）。
+ * 页内混有 Yahoo Scout「People also ask」AI 区块，其链接全是 yahoo.com，按域名过滤。
+ */
+export function parseYahooMarkdown(md, limit = 5) {
+const lines = String(md || "").split("\n");
+const items = [];
+const seen = new Set();
+for (let i = 0; i < lines.length && items.length < limit; i++) {
+const m = lines[i].trim().match(YAHOO_ANCHOR_RE);
+if (!m || m[1] !== m[2]) continue;
+const url = m[1];
+let host = "";
+try {
+host = new URL(url).hostname;
+} catch {
+continue;
+}
+if (host.endsWith("yahoo.com") || seen.has(url)) continue;
+let title = "";
+for (let j = i - 1; j >= Math.max(0, i - 5); j--) {
+const t = lines[j].trim();
+if (t.startsWith("### ")) {
+title = cleanBingText(t.slice(4));
+break;
+}
+if (YAHOO_ANCHOR_RE.test(t)) break;
+}
+if (!title) continue;
+const snip = [];
+for (let j = i + 1; j < Math.min(lines.length, i + 8); j++) {
+const t = lines[j].trim();
+if (!t) {
+if (snip.length) break;
+continue;
+}
+if (YAHOO_ANCHOR_RE.test(t) || t.startsWith("#") || /^\d+\.\s*$/.test(t) || t.startsWith("- [")) break;
+snip.push(cleanBingText(t));
+}
+seen.add(url);
+items.push({ title, url, snippet: snip.join(" ").slice(0, 300) });
+}
+const text = items.map((r, i) => `${i + 1}. ${r.title}\n ${r.url}\n ${r.snippet}`).join("\n");
+return { text: text.trim(), urls: items.map((r) => r.url) };
 }
 
 /** Brave 结果的展示地址（example.com › path › page）还原成真实地址。 */
