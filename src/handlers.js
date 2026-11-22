@@ -2068,7 +2068,7 @@ return out;
           text = await chatWithTools(
             entry,
             messages,
-            { chatId, senderId, timezone: config.timezone, logger, outbox: toolOutbox, store: toolStore, imageSearch: imageSearchImpl },
+            { chatId, senderId, senderName: speakerName, timezone: config.timezone, logger, outbox: toolOutbox, store: toolStore, imageSearch: imageSearchImpl },
             (u) => {
               seenUsage = u;
             },
@@ -2122,7 +2122,7 @@ return out;
     {
       const leaked = extractTextToolCalls(answer);
       if (leaked.length > 0 && usedEntry) {
-        const toolCtx = { chatId, senderId, timezone: config.timezone, logger, outbox: toolOutbox, store: toolStore, imageSearch: imageSearchImpl };
+        const toolCtx = { chatId, senderId, senderName: speakerName, timezone: config.timezone, logger, outbox: toolOutbox, store: toolStore, imageSearch: imageSearchImpl };
         const resultLines = [];
         for (const call of leaked) {
           try {
