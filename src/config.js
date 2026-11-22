@@ -114,7 +114,7 @@ export function loadConfig() {
     name: DEFAULT_PROVIDER,
     baseURL: (process.env.AI_API_BASE || "https://api.openai.com/v1").trim(),
     apiKey: (process.env.AI_API_KEY || "").trim(),
-    model: (process.env.AI_API_MODEL || "gpt-4o-mini").trim(),
+    model: (process.env.AI_API_MODEL || "").trim(), // 可留空：启动时自动向接口识别（modeldetect.js）
     weight: 10,
     dailyLimit: 0,
   };
