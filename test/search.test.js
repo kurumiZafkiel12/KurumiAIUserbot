@@ -13,6 +13,7 @@ buildYahooSearchUrl,
 parseYahooMarkdown,
 buildYahooImageSearchUrl,
 parseYahooImageResults,
+sanitizeRewrittenQuery,
 buildBraveSearchUrl,
 parseBraveMarkdown,
 buildBingSearchUrl,
@@ -223,4 +224,12 @@ assert.deepEqual(parseYahooImageResults(md), [
 "https://date-a-live5th-anime.com/common/images/character/character06.png",
 "https://example.com/a.jpg",
 ]);
+});
+
+test("sanitizeRewrittenQuery：取首行剥引号，空/过长回落兜底", () => {
+assert.equal(sanitizeRewrittenQuery("X 玉米须 用户 黑历史\n这是多余的第二行", "兜底"), "X 玉米须 用户 黑历史");
+assert.equal(sanitizeRewrittenQuery("「kazumi 追番播放器」", "兜底"), "kazumi 追番播放器");
+assert.equal(sanitizeRewrittenQuery("", "兜底"), "兜底");
+assert.equal(sanitizeRewrittenQuery("好", "兜底"), "兜底");
+assert.equal(sanitizeRewrittenQuery("x".repeat(90), "兜底"), "兜底");
 });
