@@ -52,6 +52,7 @@ buildYahooSearchUrl,
 parseYahooMarkdown,
 buildYahooImageSearchUrl,
 parseYahooImageResults,
+sanitizeRewrittenQuery,
 formatSearchContext,
 maskSearchKey,
 } from "./search.js";
@@ -566,6 +567,26 @@ return text;
 } catch (err) {
 pool.markFailure(entry, err);
 throw err;
+}
+}
+
+/** 搜索前的 AI 意图改写（v0.9.16）：机械清洗分不清对象歧义（「X 上的用户『玉米须』」
+ * 会被当成中药玉米须去搜），搜之前让模型识别平台与对象类型、把原问题改写成一条
+ * 查询词。任何失败都回落到传入的兜底查询，绝不阻塞搜索。 */
+async function rewriteSearchQuery(rawQuestion, fallback) {
+try {
+const out = await askModelOnce([
+{
+role: "system",
+content:
+"你负责把用户的问题改写成一句给搜索引擎的查询词。规则：只输出查询词本身一行，不要解释、不要引号；保留关键专名；问题里提到平台（X/推特/B站/知乎/微博/GitHub 等）时把平台名写进查询；问的是某个平台上的用户/账号时，按『平台名 + 用户名 + 用户』组织查询，不要把用户名当普通名词；问新闻事件就保留事件关键词；问概念/事物就保留事物名加问题关键词。",
+},
+{ role: "user", content: String(rawQuestion || "") },
+]);
+return sanitizeRewrittenQuery(out, fallback);
+} catch (err) {
+logger.error(`搜索查询改写失败：${err.message}`);
+return fallback;
 }
 }
 
@@ -1967,6 +1988,8 @@ return out;
     const labelMatch = fallbackQuery.match(/^[^：:\n]{1,12}[：:]([\s\S]+)$/);
     if (labelMatch) fallbackQuery = labelMatch[1];
     const plan = planSearch(question, { hasKey: Boolean(config.searchApiKey), hasPhoto: false, provider: config.searchProvider, fallbackQuery });
+    // AI 意图改写：识别平台/对象后改写查询词（失败回落清洗结果，不阻塞）。
+    if (plan) plan.query = await rewriteSearchQuery(question, plan.query);
     if (plan) {
       try {
         if (plan.mode === "lightpanda") {
