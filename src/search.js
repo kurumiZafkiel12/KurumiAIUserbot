@@ -94,6 +94,11 @@ if (q.includes("联网搜索")) {
 const query = cleanSearchQuery(q) || cleanSearchQuery(options.fallbackQuery || "");
 return { mode: viaLightpanda ? "lightpanda" : "tavily", query: query || q };
 }
+// 短消息续聊不搜（v0.9.18）：「抽」「好」「再来一个」这类 4 字内的短回复几乎都是
+// 接上文（机器人刚问「要抽几张玩吗」），拿去搜只会带回字典/百科把对话劫持了
+// （群内实测：Pawn 答「抽」被当成查字典）。有会话历史时跳过搜索，交给模型结合
+// 上文回答；无历史的首条短消息照常搜。显式「联网搜索」已在上面先行放行。
+if (options.hasHistory && q.length <= 4) return null;
 if (LOCAL_ONLY_KEYWORDS.some((k) => q.includes(k))) return null;
 const query = cleanSearchQuery(q);
 if (query) return { mode, query };
