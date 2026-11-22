@@ -1,5 +1,9 @@
 # 更新日志
 
+## v0.9.14（2026-11-22）
+
+- 【新增搜图发图工具 find_photo】对齐原 tgai 机器人的行为：群里说「看看X的照片」时它直接回一张图，我们这边此前只能回文字。实现：模型判断用户想看图时调用 find_photo——handlers 经 ctx 注入搜图执行器（Lightpanda 抓 Yahoo 图片搜索，parseYahooImageResults 从结果链接的 imgurl 参数提取原图地址；实测搜「時崎狂三」首条即官方动画站角色图），工具逐张下载候选（验 content-type、5KB–15MB），第一张合格的进 outbox 随回复以照片发出（与二维码同一发送通道）；工具门新增照片/图片/壁纸/长什么样等词，系统提示工具清单同步。附件发送的临时文件改按附件真实扩展名命名（JPEG/WebP 不再套 .png）。通道未启用/没搜到/下载全失败时如实回话，不编图
+
 ## v0.9.13（2026-11-22）
 
 - 【Lightpanda 引擎链换首选：Yahoo → Brave → Bing】2026-11-22 晚在生产机逐个实测候选引擎（同一问题 kazumi）：Yandex 弹验证码、Startpage 被墙、Google/Qwant 抓不到结果、搜狗/360 能出结果但索引偏国内；Yahoo（Bing 索引）不设墙且质量最好——kazumi 首条即官网（Flutter 跨平台番剧采集应用）、「Spx收盘价是多少」给英为财情/富途/东方财富等对题财经源，正是 Bing 本家在同 IP 下时灵时不灵的那批结果。新增 buildYahooSearchUrl / parseYahooMarkdown（裸链接行锚点 + ### 标题 + 摘要，按域名过滤 Yahoo Scout 的 AI 区块）；Brave 降为第二顺位（其 PoW 验证解除后仍可自动接回），Bing 继续兜底
