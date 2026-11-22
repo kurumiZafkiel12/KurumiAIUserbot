@@ -40,18 +40,54 @@ const LOCAL_ONLY_KEYWORDS = [
 * @param {boolean} [options.hasKey] 没配 key 时一律不搜
 * @returns {{mode: "tavily", query: string} | {mode: "serper", query: string} | null}
 */
+// 指令词清洗（v0.9.11）：用户常把「去网上搜kazumi」「介绍下X」整句发来，直接拿整句当
+// 查询词，引擎会按指令词分词（「去网上搜kazumi」被按「去」搜出字典页）。剥掉开头的
+// 指令短语，只留真正要搜的内容；整句只剩指令时返回空串，交给话题兜底。
+const SEARCH_INSTRUCTION_PREFIXES = [
+"去网上搜", "上网搜", "网上搜", "帮我搜索", "帮忙搜", "帮我搜", "搜索一下", "搜一下", "搜搜",
+"去搜", "去查", "帮我查", "查一下", "查查", "介绍一下", "介绍下", "讲一讲", "讲讲", "说说", "一下",
+];
+
+export function cleanSearchQuery(question) {
+let q = String(question || "").trim().replace(/联网搜索/g, "").trim();
+let changed = true;
+while (changed && q) {
+changed = false;
+for (const p of SEARCH_INSTRUCTION_PREFIXES) {
+if (q.startsWith(p)) {
+q = q.slice(p.length).trim();
+changed = true;
+break;
+}
+}
+const stripped = q.replace(/^[\s，,、：:；;]+/, "");
+if (stripped !== q) {
+q = stripped;
+changed = true;
+}
+}
+return q;
+}
+
 export function planSearch(question, options = {}) {
 const viaLightpanda = options.provider === "lightpanda";
 if (!viaLightpanda && !options.hasKey) return null;
 if (options.hasPhoto) return null;
 const q = String(question || "").trim();
 if (!q) return null;
+const mode = viaLightpanda ? "lightpanda" : "serper";
 if (q.includes("联网搜索")) {
-const query = q.replace(/联网搜索/g, "").trim();
-return { mode: viaLightpanda ? "lightpanda" : "tavily", query: query || q};
+// 显式指令：清洗后直接搜，不走本地关键词拦截；清洗为空时拿上文话题兜底。
+const query = cleanSearchQuery(q) || cleanSearchQuery(options.fallbackQuery || "");
+return { mode: viaLightpanda ? "lightpanda" : "tavily", query: query || q };
 }
 if (LOCAL_ONLY_KEYWORDS.some((k) => q.includes(k))) return null;
-return { mode: viaLightpanda ? "lightpanda" : "serper", query: q};
+const query = cleanSearchQuery(q);
+if (query) return { mode, query };
+// 整句只剩指令词（如单独一句「去网上搜」）：拿上一条用户问题当主题搜。
+const fallback = cleanSearchQuery(options.fallbackQuery || "");
+if (fallback) return { mode, query: fallback };
+return null;
 }
 
 /** 构造 Serper 请求（纯函数）。 */
