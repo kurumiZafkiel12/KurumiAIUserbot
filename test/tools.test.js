@@ -12,6 +12,7 @@ import {
   toolGate, executeTool, TOOL_DEFS, extractTextToolCalls, stripTextToolCalls,
   resolveStockSymbol, parseYahooChart, parseTencentQuote,
   addReminderTool,
+  directToolCommand,
 } from "../src/tools.js";
 import { ToolStore, reminderFireText, resolveReminderInputUser } from "../src/toolstore.js";
 import { chatWithTools } from "../src/toolchat.js";
@@ -370,4 +371,18 @@ test("resolveReminderInputUser（v0.9.17）：落盘 accessHash 优先；缓存�
   // ④ 全失败 → null（调度器退回纯文本）
   const dead = { getInputEntity: async () => { throw new Error("没有"); }, getMessages: async () => { throw new Error("没有"); } };
   assert.equal(await resolveReminderInputUser(dead, { senderId: "42", senderAccessHash: "", chatId: "-1001" }), null);
+});
+
+test("directToolCommand（v0.9.18）：裸口令直达，带问法不命中；塔罗结果带牌名", () => {
+assert.deepEqual(directToolCommand("掷骰子"), { name: "roll_dice", args: { expr: "1d6" } });
+assert.deepEqual(directToolCommand("骰子 2d20"), { name: "roll_dice", args: { expr: "2d20" } });
+assert.deepEqual(directToolCommand("塔罗牌"), { name: "tarot", args: {} });
+assert.deepEqual(directToolCommand("抽塔罗"), { name: "tarot", args: {} });
+assert.deepEqual(directToolCommand("抽签"), { name: "draw_lot", args: {} });
+assert.deepEqual(directToolCommand("抛硬币"), { name: "flip_coin", args: { times: 1 } });
+assert.deepEqual(directToolCommand("抛硬币 3次"), { name: "flip_coin", args: { times: 3 } });
+assert.equal(directToolCommand("塔罗牌怎么玩"), null);
+assert.equal(directToolCommand("我想掷骰子"), null);
+assert.equal(directToolCommand("抽"), null);
+assert.match(tarotTool(1), /^1\. \S+（(正位|逆位)）：/);
 });
