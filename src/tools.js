@@ -276,6 +276,26 @@ const LOT_LEVELS = [
 { level: "上上签", verse: "时来天地皆同力，所愿皆成不用疑。", note: "难得的好运，抓紧办大事。"},
 ];
 
+/**
+ * 裸工具命令直达（v0.9.18）：消息基本就是一句娱乐工具口令时（掷骰子/塔罗牌/抽签/
+ * 抛硬币），返回要执行的工具与参数，由 handlers 直接执行、一条消息发结果，不经
+ * 模型裁量——经模型时它常先解释一通、发链接、反问要不要抽，体验差（对齐原项目
+ * 机器人即问即抽）。带具体问法（「塔罗牌怎么玩」「我想掷骰子」）不命中、照常走模型。
+ */
+export function directToolCommand(question) {
+const q = String(question || "").trim().replace(/[。！!？?~～、\s]+$/u, "");
+let m;
+if ((m = q.match(/^(?:掷|扔|摇|丢)?骰子(?:\s*(\d{1,2}d\d{1,3}(?:[+-]\d{1,4})?))?$/u))) {
+return { name: "roll_dice", args: { expr: m[1] || "1d6" } };
+}
+if (/^(?:抽)?塔罗(?:牌)?(?:占卜)?$/u.test(q) || q === "抽牌") return { name: "tarot", args: {} };
+if (/^(?:抽签|求签)$/u.test(q)) return { name: "draw_lot", args: {} };
+if ((m = q.match(/^(?:抛|掷)硬币(?:\s*(\d{1,2})\s*(?:次|个|枚)?)?$/u))) {
+return { name: "flip_coin", args: { times: m[1]? Number(m[1]): 1 } };
+}
+return null;
+}
+
 export function drawLotTool() {
 const lot = LOT_LEVELS[crypto.randomInt(LOT_LEVELS.length)];
 return `抽签结果：${lot.level}。签诗：${lot.verse}解曰：${lot.note}`;
@@ -319,7 +339,7 @@ if (used.has(i)) continue;
 used.add(i);
 const card = deck[i];
 const reversed = crypto.randomInt(4) === 0;
-picked.push(`${reversed? "逆位": "正位"}：${reversed? card.rev: card.up}`);
+picked.push(`${card.name}（${reversed? "逆位": "正位"}）：${reversed? card.rev: card.up}`);
 }
 const labels = n === 3? ["过去/现状：", "现在/核心：", "未来/走向："]: null;
 return picked.map((p, i) => (labels? labels[i]: `${i + 1}. `) + p).join("\n") + "\n（塔罗仅供娱乐，别当决策依据。）";
@@ -1156,4 +1176,4 @@ export function stripTextToolCalls(text) {
 /** 注入系统提示的工具说明（放在发言者断言之前，不抢占末尾断言的位置）。 */
 export const TOOLS_PROMPT_NOTE =
 "你有一组内置工具可以调用（查天气、翻译、热搜热榜、汇率、币价、金价、油价、票房、豆瓣电影、百科、IP 归属、一言、诗词、图书、二维码、短网址还原、编解码、哈希、进制/单位换算、日期计算、随机数、密码生成、字数统计、颜色换算、抽签、掷骰子、抛硬币、塔罗、星座运势、黄历、世界时间、设定时提醒、待办清单、GitHub 仓库搜索、搜图发图）。用户想看某个人物/东西的照片或图片时，调用搜图发图工具把图发出去，不要只回文字描述。" +
-"用户的问题需要实时数据、精确计算或这些功能时，先调用工具拿到结果再回答，不许凭记忆编造实时数据（天气、价格、热榜、票房尤其不许编）。工具返回失败或不可用时，如实告诉用户暂时查不到，不要用假数据糊弄。设提醒、记待办这类会落盘的功能，必须真的调用工具才算数：没调用工具、或工具没返回成功，绝不许声称已经设好、记好或存好。工具只能通过系统提供的调用机制使用，绝不要在回复正文里写 <tool_call> 标记或工具调用的 JSON。";
+"用户的问题需要实时数据、精确计算或这些功能时，先调用工具拿到结果再回答，不许凭记忆编造实时数据（天气、价格、热榜、票房尤其不许编）。工具返回失败或不可用时，如实告诉用户暂时查不到，不要用假数据糊弄。设提醒、记待办这类会落盘的功能，必须真的调用工具才算数：没调用工具、或工具没返回成功，绝不许声称已经设好、记好或存好。工具只能通过系统提供的调用机制使用，绝不要在回复正文里写 <tool_call> 标记或工具调用的 JSON。你可以 @ 当前说话人：他的用户名写在系统提示的发言者信息里，在回复正文里写 @用户名 就能 @ 到他；设定时提醒到点也会自动 @ 设定者。这些都是真能用的功能，不要声称 @ 不了、不知道对方用户名、或定时提醒没调通、用不了。";
