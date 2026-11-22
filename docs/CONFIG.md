@@ -58,6 +58,8 @@
   "recordGroups": [],
   "recordContextLimit": {},
   "searchApiKey": "",
+  "searchProvider": "",
+  "lightpandaBin": "",
   "customName": { "first": "" }
 }
 ```
@@ -188,7 +190,11 @@ recordGroups 是开启了聊天记录的群 ID 列表（`/ai 开启记录`）；
 
 ### searchApiKey（字符串，可选，默认空，程序也会维护）
 
-联网搜索的 key（Serper 风格；问题带「联网搜索」时走 Tavily 深搜，地址可用 searchApiBase / searchApiBase2 覆盖默认）。用 `/ai 换搜索key` 改（写 config.json、不写 .env、立即生效）；.env 的 `SEARCH_API_KEY` 可作兜底。不配则搜索功能整体不启用。
+联网搜索的 key（Serper 风格；问题带「联网搜索」时走 Tavily 深搜，地址可用 searchApiBase / searchApiBase2 覆盖默认）。用 `/ai 换搜索key` 改（写 config.json、不写 .env、立即生效）；.env 的 `SEARCH_API_KEY` 可作兜底。不配 key 且没设下面的 searchProvider 时，搜索功能整体不启用。
+
+### searchProvider / lightpandaBin（字符串，可选，默认空）
+
+搜索后端选择：设 `"searchProvider": "lightpanda"` 后改走本机 Lightpanda 抓 Bing 结果页（免 key、无额度），此时 searchApiKey 不再是启用条件；不设或设其它值则走上面的 key 接口线。.env 的 `SEARCH_PROVIDER` 可作兜底。`lightpandaBin` 是 Lightpanda 可执行文件路径，默认 `/opt/lightpanda/lightpanda`，.env 的 `LIGHTPANDA_BIN` 可作兜底。Lightpanda 需自行安装（官方 nightly 二进制），机器人只负责调用。
 
 ### customName（对象，可选，程序也会维护）
 
