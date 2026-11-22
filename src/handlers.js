@@ -50,6 +50,8 @@ buildBingSearchUrl,
 parseBingMarkdown,
 buildYahooSearchUrl,
 parseYahooMarkdown,
+buildYahooImageSearchUrl,
+parseYahooImageResults,
 formatSearchContext,
 maskSearchKey,
 } from "./search.js";
@@ -285,6 +287,13 @@ env: { ...process.env, LIGHTPANDA_DISABLE_TELEMETRY: "true" },
 (err, stdout) => (err ? reject(err) : resolve(String(stdout || ""))),
 );
 }));
+// 搜图执行器（给 find_photo 工具经 ctx 注入）：走 Lightpanda 抓 Yahoo 图片搜索，
+// 返回原图地址列表；非 lightpanda 后端时返回空（工具会如实回「通道未启用」）。
+const imageSearchImpl = async (query) => {
+if (config.searchProvider !== "lightpanda") return [];
+const md = await lightpandaFetch(config.lightpandaBin, buildYahooImageSearchUrl(query));
+return parseYahooImageResults(md);
+};
 const sleepFn = deps.sleep || ((ms) => new Promise((r) => setTimeout(r, ms)));
 const updateProfile =
 deps.updateProfile ||
@@ -2059,7 +2068,7 @@ return out;
           text = await chatWithTools(
             entry,
             messages,
-            { chatId, senderId, timezone: config.timezone, logger, outbox: toolOutbox, store: toolStore },
+            { chatId, senderId, timezone: config.timezone, logger, outbox: toolOutbox, store: toolStore, imageSearch: imageSearchImpl },
             (u) => {
               seenUsage = u;
             },
@@ -2113,7 +2122,7 @@ return out;
     {
       const leaked = extractTextToolCalls(answer);
       if (leaked.length > 0 && usedEntry) {
-        const toolCtx = { chatId, senderId, timezone: config.timezone, logger, outbox: toolOutbox, store: toolStore };
+        const toolCtx = { chatId, senderId, timezone: config.timezone, logger, outbox: toolOutbox, store: toolStore, imageSearch: imageSearchImpl };
         const resultLines = [];
         for (const call of leaked) {
           try {
@@ -2175,7 +2184,7 @@ return out;
     // 工具附件（如二维码图片）：随答案一起发到当前会话。
     for (const item of toolOutbox) {
       if (!item || item.type !== "photo" || !item.buffer) continue;
-      const tmp = path.join(os.tmpdir(), `tool_${Date.now()}_${Math.floor(Math.random() * 100000)}.png`);
+      const tmp = path.join(os.tmpdir(), `tool_${Date.now()}_${Math.floor(Math.random() * 100000)}${path.extname(item.filename || "") || ".png"}`);
       try {
         fs.writeFileSync(tmp, item.buffer);
         await client.sendFile(msg.peerId, { file: tmp, replyTo: msg.id });
