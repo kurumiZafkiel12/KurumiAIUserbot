@@ -307,6 +307,10 @@ const sensitiveKeywordsSet = new Set(config.sensitiveKeywords || []);
 const lastAskAt = new Map();
 /** @type {Map<string, number>} 代码关键词命中计数（内存版，累计到 CODE_WARN_LIMIT 拉黑） */
 const codeWarnCounts = new Map();
+/** 搜索结果缓存（进程内，15 分钟）：群里重复问题不重复抓——少抓一次就少一分被
+ * 搜索引擎弹人机验证的概率（Brave 对高频抓取会弹 PoW 验证），重复问答也更快。 */
+const searchCache = new Map();
+const SEARCH_CACHE_TTL_MS = 15 * 60 * 1000;
 /** @type {string[]} 机器人最近经 reply() 发出的文案（回声免疫：同文再被送达就忽略） */
 const recentSentTexts = [];
 /**
@@ -1955,21 +1959,30 @@ return out;
     if (plan) {
       try {
         if (plan.mode === "lightpanda") {
-          // 引擎顺序：Brave 优先（自有索引，中英混排问题更可靠），解析不出再用 Bing 兜底。
-          let result = { text: "", urls: [] };
-          for (const attempt of [
-            async () => parseBraveMarkdown(await lightpandaFetch(config.lightpandaBin, buildBraveSearchUrl(plan.query))),
-            async () => parseBingMarkdown(await lightpandaFetch(config.lightpandaBin, buildBingSearchUrl(plan.query))),
-          ]) {
-            try {
-              result = await attempt();
-            } catch {
-              result = { text: "", urls: [] };
+          const cacheKey = `lightpanda:${plan.query.toLowerCase()}`;
+          const cached = searchCache.get(cacheKey);
+          if (cached && Date.now() - cached.at < SEARCH_CACHE_TTL_MS) {
+            question = formatSearchContext(plan.mode, cached.text, question);
+          } else {
+            // 引擎顺序：Brave 优先（自有索引，中英混排问题更可靠），解析不出再用 Bing 兜底。
+            let result = { text: "", urls: [] };
+            for (const attempt of [
+              async () => parseBraveMarkdown(await lightpandaFetch(config.lightpandaBin, buildBraveSearchUrl(plan.query))),
+              async () => parseBingMarkdown(await lightpandaFetch(config.lightpandaBin, buildBingSearchUrl(plan.query))),
+            ]) {
+              try {
+                result = await attempt();
+              } catch {
+                result = { text: "", urls: [] };
+              }
+              if (result.text) break;
             }
-            if (result.text) break;
+            if (result.text) {
+              question = formatSearchContext(plan.mode, result.text, question);
+              if (searchCache.size > 100) searchCache.clear();
+              searchCache.set(cacheKey, { text: result.text, at: Date.now() });
+            } else logger.error("搜索失败：Lightpanda 两条引擎都未解析出结果");
           }
-          if (result.text) question = formatSearchContext(plan.mode, result.text, question);
-          else logger.error("搜索失败：Lightpanda 两条引擎都未解析出结果");
         } else {
           const req =
             plan.mode === "tavily"
