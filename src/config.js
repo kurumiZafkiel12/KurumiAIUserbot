@@ -206,7 +206,11 @@ export function loadConfig() {
     // 当前音色：voiceByChat 是群级，voiceByChatUser 是个人级（键 "chatId_senderId"）。
     voiceByChat: stringMap(json.voiceByChat),
     voiceByChatUser: stringMap(json.voiceByChatUser),
-    // 群聊天记录：开启记录的群 ID 名单 + 每群注入条数（缺省 100）。
+    // 群聊天记录：默认全群记录（recordAllGroups 缺省开，像原项目一样读全部群消息、
+    // 不只记被回复的）；recordMutedGroups 是关掉记录的群；recordGroups 是
+    // recordAllGroups 关闭时的旧白名单。每群注入条数缺省 100。
+    recordAllGroups: json.recordAllGroups !== false,
+    recordMutedGroups: stringArray(json.recordMutedGroups),
     recordGroups: stringArray(json.recordGroups),
     recordContextLimit: numberMap(json.recordContextLimit),
     // 搜索 key：config.json 的 searchApiKey 优先（/ai 换搜索key 写它），.env 的 SEARCH_API_KEY 兜底。
