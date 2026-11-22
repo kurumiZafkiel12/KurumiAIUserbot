@@ -1,5 +1,9 @@
 # 更新日志
 
+## v0.9.6（2026-11-22）
+
+- 【联网搜索新增 Lightpanda 后端：免 key、无额度】原搜索链必须先配 Serper/Tavily 的 key 才启用，没 key 时问时效问题只能靠模型记忆。改：config.json 设 `"searchProvider": "lightpanda"` 后，搜索改走本机 Lightpanda（需单独安装，默认路径 /opt/lightpanda/lightpanda，可用 lightpandaBin 或 .env 的 LIGHTPANDA_BIN 覆盖）抓 Bing 结果页并解析（标题/真实链接/摘要，Bing 跳转链接自动解码），不配 key 也能搜、无调用额度；没设 searchProvider 时维持原 key 接口线（Serper 日常线 +「联网搜索」走 Tavily）。/ai 状态的搜索一行改为显示当前后端。实测（生产机）：Lightpanda 抓 Bing 结果页可正常解析出 5 条结果；DuckDuckGo 结果页对机房 IP 有机器人验证、不可用，故选 Bing。失败时与原先一致：记日志后降级为不搜、照常回答
+
 ## v0.9.5（2026-11-22）
 
 - 【修提及误触发：@ 别人也会答】实测：群里发「@deepseekforkurumitokisaki2 你好」（一个并不存在的用户名），大肥鱼 @deepseekforkurumitokisaki 却抢答——提及判定用的是子串包含，本名正好是那串的前缀就误判。改：提及必须按完整用户名匹配（@ 后面紧跟字母/数字/下划线的是别人的用户名，不算提及本号），顺带兼容大小写（TG 用户名不分大小写）；提及式号主命令解析同步修。两个用户名互为前缀的账号同群时不再互相抢答
