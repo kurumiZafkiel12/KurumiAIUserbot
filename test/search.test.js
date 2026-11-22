@@ -82,6 +82,7 @@ assert.equal(planSearch("这是什么", { provider: "lightpanda", hasPhoto: true
 
 test("Lightpanda 线：Bing 地址构造、Bing 跳转解码、Bing Markdown 解析", () => {
 assert.ok(buildBingSearchUrl("a b&c").includes("q=a%20b%26c"));
+assert.ok(buildBingSearchUrl("x").includes("mkt=zh-CN"));
 const real = "https://chat.deepseek.com/sign_in";
 const u = "a1" + Buffer.from(real, "utf-8").toString("base64").replace(/=+$/, "");
 const ck = `https://www.bing.com/ck/a?!&&p=xyz&u=${u}&ntb=1`;
@@ -90,6 +91,7 @@ assert.equal(decodeBingRedirect("https://example.com/nope"), "");
 assert.equal(decodeBingRedirect("not a url"), "");
 
 const u2 = "a1" + Buffer.from("https://www.deepseek.com/", "utf-8").toString("base64").replace(/=+$/, "");
+const uAsset = "a1" + Buffer.from("https://example.com/font.woff2", "utf-8").toString("base64").replace(/=+$/, "");
 const md = [
 "Skip to content",
 "2. ",
@@ -105,14 +107,20 @@ const md = [
 `## [**DeepSeek** 官网](https://www.bing.com/ck/a?!&&p=abc&u=${u2}&ntb=1)`,
 "",
 "深度求索官方网站。",
-"## [无关标题](https://example.com/direct)",
+`## [字体文件不该收录](https://www.bing.com/ck/a?!&&p=zz&u=${uAsset}&ntb=1)`,
+"资源文件行。",
+"## [原神官网](https://www.yuanshen.com/)",
+"米哈游开放世界冒险 RPG。",
+"## [必应首页](https://www.bing.com/)",
 "这行不该被收录。",
 ].join("\n");
 const { text, urls } = parseBingMarkdown(md);
-assert.deepEqual(urls, [real, "https://www.deepseek.com/"]);
+assert.deepEqual(urls, [real, "https://www.deepseek.com/", "https://www.yuanshen.com/"]);
 assert.ok(text.includes("1. DeepSeek - Into the Unknown"));
 assert.ok(text.includes("Chat with DeepSeek AI, your assistant."));
+assert.ok(text.includes("3. 原神官网"));
 assert.ok(!text.includes("Read more"));
-assert.ok(!text.includes("无关标题"));
+assert.ok(!text.includes("字体文件"));
+assert.ok(!text.includes("必应首页"));
 assert.deepEqual(parseBingMarkdown(""), { text: "", urls: [] });
 });
