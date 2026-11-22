@@ -7,6 +7,7 @@ import { NewMessage } from "telegram/events/index.js";
 import { loadConfig } from "./config.js";
 import { createLogger } from "./logger.js";
 import { ProviderPool } from "./providers.js";
+import { ensureProviderModels, inheritModels } from "./modeldetect.js";
 import { ConversationStore } from "./context.js";
 import { Notebook } from "./notebook.js";
 import { UserProfiles } from "./profiles.js";
@@ -71,6 +72,9 @@ async function main() {
   // 可重载运行时：config 与 pool 放在可替换的盒子里。号主命令改完 config.json 后
   // 调 reloadRuntime()，这里重新 loadConfig 并重建提供方池，handlers 换上新引用，
   // 改动立即生效不用重启（记事本后台整理等用 pool 的地方走的也是 handlers 内的引用）。
+  // 没填模型名的提供方先自动识别一遍（问接口 /models），再建池——池构造要求模型非空。
+  await ensureProviderModels(effectiveConfig.providers, logger);
+
   const runtime = {
     config: effectiveConfig,
     pool: new ProviderPool(effectiveConfig.providers, logger),
@@ -78,6 +82,8 @@ async function main() {
   function reloadRuntime() {
     const fresh = loadConfig();
     const eff = { ...fresh, myUsername: username };
+    // 重载是同步路径：新配置里没填的模型名从旧配置按名继承上次的识别结果。
+    inheritModels(eff.providers, runtime.config.providers, logger);
     const oldPool = runtime.pool;
     runtime.config = eff;
     runtime.pool = new ProviderPool(eff.providers, logger);
