@@ -21,6 +21,12 @@ export const DEFAULT_PROVIDER = "default";
  * @param {string} [options.role] 发言者档位："owner" / "admin" / "user"，只影响上面的开关判定
  * @returns {null | {kind: "mention", trigger: string, providerName: string, question: string}}
  */
+/** 用户名提及的正则：完整匹配 @用户名，后一位不得是用户名合法字符（字母/数字/下划线）；TG 用户名不分大小写。global=true 时供整串替换用。 */
+export function mentionRegex(username, global = false) {
+  const esc = String(username).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`@${esc}(?![A-Za-z0-9_])`, global ? "gi" : "i");
+}
+
 export function parseTrigger(text, options = {}) {
   const { username = "", defaultProvider = "", usernameTrigger = true, role = "owner" } = options;
   if (!text || typeof text !== "string") return null;
@@ -28,10 +34,13 @@ export function parseTrigger(text, options = {}) {
   const mention = username ? `@${username}` : null;
 
   // 提及用户名：出现在消息任意位置都算触发，问题是去掉提及后的剩余文本。
+  // 必须按完整用户名匹配：@ 本名后面紧跟字母/数字/下划线的其实是别人的用户名
+  // （本名 abc、对方 abcd），子串包含会误触发（v0.9.5 实测：@deepseekforkurumitokisaki2
+  // 把 @deepseekforkurumitokisaki 误判成被提及）。TG 用户名不分大小写，一并兼容。
   // 用户名触发被号主关掉时，普通用户的提及不算触发。
   const mentionBlocked = usernameTrigger === false && role === "user";
-  if (mention && !mentionBlocked && text.includes(mention)) {
-    const question = text.split(mention).join(" ").replace(/\s+/g, " ").trim();
+  if (mention && !mentionBlocked && mentionRegex(username).test(text)) {
+    const question = text.replace(mentionRegex(username, true), " ").replace(/\s+/g, " ").trim();
     return {
       kind: "mention",
       trigger: mention,
@@ -86,10 +95,10 @@ export function parseOwnerCommand(text) {
  */
 export function parseMentionOwnerCommand(text, username) {
   if (!text || typeof text !== "string" || !username) return null;
-  const mention = `@${username}`;
   const trimmed = text.trimStart();
-  if (!trimmed.startsWith(mention)) return null;
-  const rest = trimmed.slice(mention.length).trimStart();
+  const m = new RegExp(`^${mentionRegex(username).source}`, "i").exec(trimmed);
+  if (!m) return null;
+  const rest = trimmed.slice(m[0].length).trimStart();
   return parseOwnerCommand(rest);
 }
 
