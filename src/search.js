@@ -219,6 +219,39 @@ const text = items.map((r, i) => `${i + 1}. ${r.title}\n ${r.url}\n ${r.snippet}
 return { text: text.trim(), urls: items.map((r) => r.url) };
 }
 
+export const YAHOO_IMAGE_SEARCH_BASE = "https://images.search.yahoo.com/search/images";
+
+/** 构造 Yahoo 图片搜索页地址（Lightpanda 抓取用）。 */
+export function buildYahooImageSearchUrl(query) {
+return `${YAHOO_IMAGE_SEARCH_BASE}?p=${encodeURIComponent(String(query || ""))}`;
+}
+
+/**
+ * 解析 Yahoo 图片搜索页（Lightpanda markdown 转储）：结果链接里带 imgurl=
+ * 参数（URL 编码的原图地址），提取、解码、去重，只留图片扩展名的 http(s) 地址。
+ * 2026-11-22 实测：搜「時崎狂三」首条即官方动画站的角色图原图。
+ */
+export function parseYahooImageResults(md, limit = 8) {
+const out = [];
+const seen = new Set();
+const re = /imgurl=([^&)\s]+)/g;
+let m;
+while ((m = re.exec(String(md || ""))) !== null && out.length < limit) {
+let url = "";
+try {
+url = decodeURIComponent(m[1]);
+} catch {
+continue;
+}
+if (!/^https?:\/\//.test(url)) continue;
+if (!/\.(jpe?g|png|webp|gif)([?#]|$)/i.test(url)) continue;
+if (seen.has(url)) continue;
+seen.add(url);
+out.push(url);
+}
+return out;
+}
+
 /** Brave 结果的展示地址（example.com › path › page）还原成真实地址。 */
 function braveDisplayUrlToReal(line) {
 const parts = cleanBingText(line).split("›").map((s) => s.trim()).filter(Boolean);
