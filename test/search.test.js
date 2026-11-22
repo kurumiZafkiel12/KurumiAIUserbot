@@ -8,6 +8,7 @@ buildSerperRequest,
 parseSerperResults,
 buildTavilyRequest,
 parseTavilyResults,
+cleanSearchQuery,
 buildBraveSearchUrl,
 parseBraveMarkdown,
 buildBingSearchUrl,
@@ -150,4 +151,22 @@ assert.ok(text.includes("Get S&P 500 Index (.SPX:INDEX) real-time stock quotes")
 assert.ok(!text.includes("1 day ago"));
 assert.ok(text.includes("2. 标普500指数(.SPX) 股价、新闻、报价和图表 - 富途牛牛"));
 assert.deepEqual(parseBraveMarkdown(""), { text: "", urls: [] });
+});
+
+test("查询词清洗：剥指令短语只留主题；整句只剩指令时为空", () => {
+assert.equal(cleanSearchQuery("去网上搜kazumi"), "kazumi");
+assert.equal(cleanSearchQuery("去网上搜"), "");
+assert.equal(cleanSearchQuery("介绍下kazumi"), "kazumi");
+assert.equal(cleanSearchQuery("帮我搜一下最近的显卡价格"), "最近的显卡价格");
+assert.equal(cleanSearchQuery("联网搜索 明天东京天气"), "明天东京天气");
+assert.equal(cleanSearchQuery("Spx收盘价是多少"), "Spx收盘价是多少");
+assert.equal(cleanSearchQuery("今天有什么科技新闻"), "今天有什么科技新闻");
+});
+
+test("planSearch：清洗后的主题做查询；无主题时拿上文兜底", () => {
+assert.deepEqual(planSearch("去网上搜kazumi", { provider: "lightpanda" }), { mode: "lightpanda", query: "kazumi" });
+assert.deepEqual(planSearch("介绍下kazumi", { provider: "lightpanda" }), { mode: "lightpanda", query: "kazumi" });
+assert.deepEqual(planSearch("去网上搜", { provider: "lightpanda", fallbackQuery: "介绍下kazumi" }), { mode: "lightpanda", query: "kazumi" });
+assert.equal(planSearch("去网上搜", { provider: "lightpanda" }), null);
+assert.deepEqual(planSearch("去网上搜", { hasKey: true, fallbackQuery: "介绍下kazumi" }), { mode: "serper", query: "kazumi" });
 });
