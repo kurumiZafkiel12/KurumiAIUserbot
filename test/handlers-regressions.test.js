@@ -637,3 +637,39 @@ test("v0.8.7 匿名发言按签名区分：不同签名各一份上下文，无�
   assert.ok(f.store.get("-100777", "anon:-100777:另一位管理").length >= 1, "另一签名应有独立上下文");
   assert.equal(f.store.get("-100777", "anon:-100777").length, 0, "带签名的不应落进无签名共用身份");
 });
+
+// ================= v0.9.4：换模型列出全部模型再选 =================
+
+test("v0.9.4 换模型：选 API 后列出全部模型，回序号写入 overrides 并设默认", async () => {
+  const f = fixture();
+  f.pool.entries[0].client.models.list = async () => ({
+    data: [{ id: "mock-model" }, { id: "alt-model" }, { id: "third-model" }],
+  });
+  await f.handler(f.event("/ai 换模型"));
+  await f.handler(f.event("1"));
+  const listReply = f.sends.map((m) => m.message).join("\n");
+  assert.match(listReply, /alt-model/);
+  assert.match(listReply, /third-model/);
+  assert.match(listReply, /（当前）/);
+  await f.handler(f.event("2"));
+  const saved = JSON.parse(fs.readFileSync(path.join(tmpRoot, "config.json"), "utf-8"));
+  assert.equal(saved.providerOverrides.default.model, "alt-model");
+  assert.equal(saved.defaultProvider, "default");
+  const all = f.sends.map((m) => m.message).join("\n");
+  assert.match(all, /已把「default」的模型换成 alt-model/);
+  assert.equal(f.modelCalls.length, 0);
+});
+
+test("v0.9.4 换模型：模型列表拉不到时，直接发模型名全文也能换", async () => {
+  const f = fixture();
+  f.pool.entries[0].client.models.list = async () => {
+    throw new Error("models endpoint not supported");
+  };
+  await f.handler(f.event("/ai 换模型"));
+  await f.handler(f.event("1"));
+  const prompt = f.sends.map((m) => m.message).join("\n");
+  assert.match(prompt, /直接发模型名全文就能换/);
+  await f.handler(f.event("typed-model"));
+  const saved = JSON.parse(fs.readFileSync(path.join(tmpRoot, "config.json"), "utf-8"));
+  assert.equal(saved.providerOverrides.default.model, "typed-model");
+});
