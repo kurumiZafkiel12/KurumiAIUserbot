@@ -888,6 +888,42 @@ export async function qrcodeTool(text, ctx) {
   return `二维码已生成（内容：${content.slice(0, 80)}），图片会随回复一起发出去。`;
 }
 
+/**
+ * 搜图发图（v0.9.14）：用户想看某个人物/东西的照片时，handlers 注入的 ctx.imageSearch
+ * （Yahoo 图片搜索，返回原图地址列表）找图，这里逐个下载、验 content-type 与体积，
+ * 第一张合格的推进 outbox 随回复发出。通道未启用/没搜到/全下载失败时返回说明文字，
+ * 让模型如实回话，不编图。
+ */
+export async function findPhotoTool(query, ctx) {
+  const q = String(query || "").trim();
+  if (!q) throw new Error("要给搜图关键词");
+  if (!ctx || typeof ctx.imageSearch !== "function") return "搜图通道未启用，这边发不了图。";
+  const urls = await ctx.imageSearch(q);
+  if (!Array.isArray(urls) || urls.length === 0) return `没搜到「${q}」的图片。`;
+  const EXT_BY_TYPE = { "image/png": ".png", "image/jpeg": ".jpg", "image/webp": ".webp", "image/gif": ".gif" };
+  for (const url of urls.slice(0, 3)) {
+    try {
+      const res = await fetchWithTimeout(url);
+      if (!res.ok) continue;
+      const type = String(res.headers.get("content-type") || "").split(";")[0].trim().toLowerCase();
+      if (!type.startsWith("image/")) continue;
+      const buf = Buffer.from(await res.arrayBuffer());
+      if (buf.length < 5 * 1024 || buf.length > 15 * 1024 * 1024) continue;
+      if (ctx && Array.isArray(ctx.outbox)) {
+        ctx.outbox.push({ type: "photo", buffer: buf, filename: `photo${EXT_BY_TYPE[type] || ".jpg"}` });
+      }
+      let host = "";
+      try {
+        host = new URL(url).hostname;
+      } catch {}
+      return `已找到「${q}」的图片并附在回复里（来源：${host}）。回话时简单说一句就行，不要贴图片链接。`;
+    } catch {
+      // 换下一张候选。
+    }
+  }
+  return `搜到了「${q}」的图片，但都下载失败，发不出去。`;
+}
+
 /* ---------------- 状态类工具：时间、提醒、待办 ---------------- */
 
 const CITY_TZ = {
@@ -980,6 +1016,7 @@ export const TOOL_DEFS = [
 { name: "book_search", description: "按书名查图书信息（作者、首版年份、ISBN）。", parameters: S({ title: STR}, ["title"]), run: (a) => bookSearchTool(a.title)},
 { name: "expand_url", description: "还原短网址，返回最终跳转地址。用户给短链接想知道指向哪时调用。", parameters: S({ url: STR}, ["url"]), run: (a) => expandUrlTool(a.url)},
 { name: "make_qrcode", description: "把文字或链接生成二维码图片，图片会随回复发出。", parameters: S({ text: STR}, ["text"]), run: (a, ctx) => qrcodeTool(a.text, ctx)},
+{ name: "find_photo", description: "用户想看某个人物、角色、东西或地方的照片/图片时用（如「看看X的照片」「发张X的图」「X长什么样」「来张X的壁纸」）：按关键词全网搜图，把找到的图随回复发出去。query 填要搜的对象名，可带限定词（如「时崎狂三 立绘」）。", parameters: S({ query: STR }, ["query"]), run: (a, ctx) => findPhotoTool(a.query, ctx)},
 { name: "world_time", description: "查某个城市/时区的当前时间。place 给城市中文名（如 东京、纽约）或 IANA 时区；不给就是机器人时区的当前时间。", parameters: S({ place: STR}), run: (a, ctx) => worldTimeTool(a.place, ctx && ctx.timezone)},
 { name: "set_reminder", description: "设定时提醒：到点时机器人会在当前会话发一条提醒消息。at 是 ISO 时间字符串（带时区，如 2026-11-22T09:00:00+09:00），按用户话里的相对时间换算成绝对时间再填。", parameters: S({ text: STR, at: STR}, ["text", "at"]), run: (a, ctx) => addReminderTool(a, ctx)},
 { name: "list_reminders", description: "查看当前会话还没触发的提醒列表。", parameters: S({}), run: (a, ctx) => listRemindersTool(ctx)},
@@ -1040,6 +1077,7 @@ const GATE_WORDS = [
 "json", "进制", "单位", "多少天", "日期差", "随机数", "随机", "抽一个", "生成密码", "密码生成", "密码", "字数", "颜色",
 "抽签", "求签", "骰子", "硬币", "塔罗", "星座", "运势", "黄历", "农历", "提醒我", "提醒一下", "待办",
 "github", "仓库", "时区", "几点", "现在时间", "电影", "上映", "汇率换算", "升国旗",
+"照片", "图片", "壁纸", "长什么样", "发张", "来张", "看看图", "看图",
 ];
 
 /** 问题是否可能需要工具（粗筛，宁宽勿漏；模型不用工具时这一轮就退化成普通非流式回答）。 */
@@ -1088,5 +1126,5 @@ export function stripTextToolCalls(text) {
 
 /** 注入系统提示的工具说明（放在发言者断言之前，不抢占末尾断言的位置）。 */
 export const TOOLS_PROMPT_NOTE =
-"你有一组内置工具可以调用（查天气、翻译、热搜热榜、汇率、币价、金价、油价、票房、豆瓣电影、百科、IP 归属、一言、诗词、图书、二维码、短网址还原、编解码、哈希、进制/单位换算、日期计算、随机数、密码生成、字数统计、颜色换算、抽签、掷骰子、抛硬币、塔罗、星座运势、黄历、世界时间、设定时提醒、待办清单、GitHub 仓库搜索）。" +
+"你有一组内置工具可以调用（查天气、翻译、热搜热榜、汇率、币价、金价、油价、票房、豆瓣电影、百科、IP 归属、一言、诗词、图书、二维码、短网址还原、编解码、哈希、进制/单位换算、日期计算、随机数、密码生成、字数统计、颜色换算、抽签、掷骰子、抛硬币、塔罗、星座运势、黄历、世界时间、设定时提醒、待办清单、GitHub 仓库搜索、搜图发图）。用户想看某个人物/东西的照片或图片时，调用搜图发图工具把图发出去，不要只回文字描述。" +
 "用户的问题需要实时数据、精确计算或这些功能时，先调用工具拿到结果再回答，不许凭记忆编造实时数据（天气、价格、热榜、票房尤其不许编）。工具返回失败或不可用时，如实告诉用户暂时查不到，不要用假数据糊弄。工具只能通过系统提供的调用机制使用，绝不要在回复正文里写 <tool_call> 标记或工具调用的 JSON。";
