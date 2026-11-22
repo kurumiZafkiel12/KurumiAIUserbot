@@ -11,6 +11,8 @@ parseTavilyResults,
 cleanSearchQuery,
 buildYahooSearchUrl,
 parseYahooMarkdown,
+buildYahooImageSearchUrl,
+parseYahooImageResults,
 buildBraveSearchUrl,
 parseBraveMarkdown,
 buildBingSearchUrl,
@@ -207,4 +209,18 @@ assert.equal(r.urls[0], "https://kazumi.app/");
 assert.ok(r.text.includes("Kazumi 官网 - 跨平台番剧采集与在线观看应用"), r.text);
 assert.ok(r.text.includes("Flutter"), r.text);
 assert.ok(!r.text.includes("scout"), r.text);
+});
+
+test("Yahoo 图片搜索：地址构造 + imgurl 原图提取", () => {
+assert.equal(buildYahooImageSearchUrl("時崎狂三"), "https://images.search.yahoo.com/search/images?p=%E6%99%82%E5%B4%8E%E7%8B%82%E4%B8%89");
+const md = [
+"[图](https://images.search.yahoo.com/search/images?p=x&imgurl=https%3A%2F%2Fdate-a-live5th-anime.com%2Fcommon%2Fimages%2Fcharacter%2Fcharacter06.png)",
+"[图](https://images.search.yahoo.com/search/images?p=x&imgurl=https%3A%2F%2Fexample.com%2Fa.jpg)",
+"[图](https://images.search.yahoo.com/search/images?p=x&imgurl=https%3A%2F%2Fexample.com%2Fa.jpg)",
+"[图](https://images.search.yahoo.com/search/images?p=x&imgurl=https%3A%2F%2Fexample.com%2Fpage.html)",
+].join("\n");
+assert.deepEqual(parseYahooImageResults(md), [
+"https://date-a-live5th-anime.com/common/images/character/character06.png",
+"https://example.com/a.jpg",
+]);
 });
