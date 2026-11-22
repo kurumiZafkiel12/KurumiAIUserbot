@@ -103,7 +103,7 @@ export const OWNER_HELP_TEXT = `可用命令：
 【API 管理】
 /ai 查看api
 /ai 查看模型 <API名字>
-/ai 换模型（再回 <序号>）
+/ai 换模型（回序号选 API，再回序号从它的全部模型里挑；挑完即默认用它）
 /ai 限额（再回 <序号>）
 /ai 换key（再回 <序号> 选 API，再发新 key 全文；改完立即生效，不用重启）
 /ai 禁用api（再回 <序号>）
@@ -800,6 +800,22 @@ return out;
       return reply(msg, "搜索 key 已更新，立即生效，联网搜索已启用。（key 不会回显）");
     }
 
+    // 第二步：换模型（回数字从列表里选，或直接发模型名全文；写 overrides 并设为默认提供方）
+    if (entry.step === 2 && entry.kind === "换模型") {
+      let model = null;
+      if (Array.isArray(entry.models) && entry.models.length) {
+        model = pickFrom(entry.models);
+        if (!model && digits === null && text.trim()) model = text.trim();
+      } else if (text.trim()) {
+        model = text.trim();
+      }
+      if (!model) return reply(msg, "没选到模型：回列表里的数字，或者直接发模型名全文。重新发 /ai 换模型 再试。");
+      const overrides = { ...(config.providerOverrides || {}) };
+      overrides[entry.providerName] = { ...(overrides[entry.providerName] || {}), model };
+      if (!saveAndReload({ providerOverrides: overrides, defaultProvider: entry.providerName })) return reply(msg, "保存失败，请看日志。");
+      return reply(msg, `已把「${entry.providerName}」的模型换成 ${model}，并设为默认提供方，已生效。之后的提问都会优先用它。`);
+    }
+
     // 第二步：限额（text 是纯数字，调用方已校验）
     if (entry.step === 2 && entry.kind === "限额") {
       const n = Number.parseInt(text, 10);
@@ -827,12 +843,25 @@ return out;
     const target = pool.entries[idx];
 
     if (entry.kind === "换模型") {
-      if (target.image) return reply(msg, `「${target.name}」是生图提供方，不能设为默认聊天提供方。`);
-      if (!saveAndReload({ defaultProvider: target.name })) return reply(msg, "保存失败，请看日志。");
-      return reply(
-        msg,
-        `默认提供方已切换为「${target.name}」（模型 ${target.model}），已生效。之后的提问都会优先用它。`,
-      );
+      if (target.image) return reply(msg, `「${target.name}」是生图提供方，不能换它的聊天模型。`);
+      // 拉这个提供方的全部模型列出来让号主挑（同 /ai 查看模型 的查法）；
+      // 拉不到（接口不支持查询）就退回「直接发模型名」。
+      let ids = [];
+      try {
+        const list = await target.client.models.list();
+        ids = ((list && list.data) || []).map((m) => m && m.id).filter(Boolean);
+      } catch {
+        ids = [];
+      }
+      if (ids.length === 0) {
+        pending.set(chatId, senderId, { kind: "换模型", step: 2, providerName: target.name, models: null });
+        return reply(msg, `「${target.name}」的模型列表没拉到（接口可能不支持查询）。直接发模型名全文就能换，60 秒内有效。`);
+      }
+      const shown = ids.slice(0, 50);
+      pending.set(chatId, senderId, { kind: "换模型", step: 2, providerName: target.name, models: shown });
+      const lines = shown.map((id, i) => `${i + 1}. ${id}${id === target.model ? "（当前）" : ""}`).join("\n");
+      const more = ids.length > shown.length ? `\n（共 ${ids.length} 个，只列前 ${shown.length} 个；想用其它的直接发模型名全文也行）` : "\n（也可以直接发模型名全文）";
+      return reply(msg, `「${target.name}」可用模型（当前：${target.model}），回数字选（60 秒内有效）：\n${lines}${more}`);
     }
 
     if (entry.kind === "禁用api") {
@@ -2243,6 +2272,12 @@ return out;
             }
             // 过期且不是数字、也不是敏感文本待办：已清掉，按普通消息继续往下走。
           } else if (expectsText) {
+            pending.consume(chatId, senderId);
+            await executePending(msg, chatId, senderId, pk.entry, trimmed);
+            return;
+          } else if (pk.entry.step === 2 && pk.entry.kind === "换模型") {
+            // 换模型第二步既收数字（从列表里选）也收全文（直接发模型名），整条都交给它处理。
+            // 不进敏感名单：模型名不是凭证，过期后迟到的文本按普通消息走即可，不用墓碑吞掉。
             pending.consume(chatId, senderId);
             await executePending(msg, chatId, senderId, pk.entry, trimmed);
             return;
