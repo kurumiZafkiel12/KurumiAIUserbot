@@ -60,7 +60,7 @@ import { buildTtsRequest, pickVoiceName, cleanSpeechText, parseVoiceSwitch, voic
 import { isImageGenRequest, extractImagePrompt, buildImageGenRequest, parseImageGenResponse} from "./imagegen.js";
 import { decideSplit} from "./split.js";
 import { composeClockName, currentHHMM} from "./nameclock.js";
-import { toolGate, TOOLS_PROMPT_NOTE, executeTool, extractTextToolCalls, stripTextToolCalls } from "./tools.js";
+import { toolGate, TOOLS_PROMPT_NOTE, executeTool, extractTextToolCalls, stripTextToolCalls, directToolCommand } from "./tools.js";
 import { chatWithTools } from "./toolchat.js";
 import { ToolStore } from "./toolstore.js";
 import { synthesizeEdgeTts, EDGE_DEFAULT_VOICE } from "./edgetts.js";
@@ -451,7 +451,7 @@ return true;
 * 历史里每条用户消息都带「名字：」标签，这里告诉模型标签和当前说话人的对应关系，
 * 并交代称呼优先：有 callName 时用称呼，不用显示名。
 */
-function speakerSegment(senderId, speakerName) {
+function speakerSegment(senderId, speakerName, speakerUsername) {
 const parts = [];
 const role = describeRole(senderId, permConfig());
 if (role) parts.push(role);
@@ -467,6 +467,11 @@ parts.push(
 } else if (speakerName) {
 parts.push(
 `当前说话人的显示名是「${speakerName}」。本会话历史中标为「${speakerName}：」开头的消息，就是他本人说的；别人说过的话不要算到他头上。`,
+);
+}
+if (speakerUsername) {
+parts.push(
+`当前说话人的 Telegram 用户名是 @${speakerUsername}。需要 @ 他时，在回复正文里写 @${speakerUsername} 就能 @ 到他（Telegram 会自动识别成提及）；不要说不知道他的用户名，更不要让他把用户名发给你。`,
 );
 }
 return parts.join("\n");
@@ -517,13 +522,13 @@ return `【语音人格】你在这个群用「${voice.name}」音色说话，�
 * 人设（systemPrompt，含默认风格）→ 破甲（最高优先级）→ 创建者信息 → 发言者/称呼
 * → 印象 → 记事本 → 用户记事本 → 群记录 → 语音人格 → 当前时间 → 身份断言（最末尾）。
 */
-function buildSystemParts(senderId, speakerName, chatId) {
+function buildSystemParts(senderId, speakerName, chatId, speakerUsername) {
 const parts = [config.systemPrompt];
 const pj = (config.poJia || "").trim();
 if (pj) parts.push("【最高优先级指令" + "，覆盖其他一切风格要求】" + pj);
 const on = ownerNote(config);
 if (on) parts.push(on);
-const seg = speakerSegment(senderId, speakerName);
+const seg = speakerSegment(senderId, speakerName, speakerUsername);
 if (seg) parts.push(seg);
 const imp = impressionSegment(senderId);
 if (imp) parts.push(imp);
@@ -1769,7 +1774,7 @@ return out;
   }
 
   /** 识图问答：下载照片 -> 从识图池按权重挑条目 -> 用该 API 的连接以条目模型发带图请求。 */
-  async function handleVisionChat(msg, chatId, senderId, speakerName, parsed, photoMsg) {
+  async function handleVisionChat(msg, chatId, senderId, speakerName, parsed, photoMsg, speakerUsername) {
     const question = parsed.question || "这张图片是什么？请描述一下。";
     if (isCoolingDown(senderId)) return;
 
@@ -1803,7 +1808,7 @@ return out;
     const dataUrl = `data:image/jpeg;base64,${Buffer.from(buf).toString("base64")}`;
     const history = store.get(chatId, senderId);
     const messages = [
-      { role: "system", content: buildSystemParts(senderId, speakerName, chatId) },
+      { role: "system", content: buildSystemParts(senderId, speakerName, chatId, speakerUsername) },
       ...history,
       {
         role: "user",
@@ -1958,7 +1963,7 @@ return out;
     }
   }
 
-  async function handleChat(msg, chatId, senderId, speakerName, parsed) {
+  async function handleChat(msg, chatId, senderId, speakerName, parsed, speakerUsername) {
     if (!parsed.question) {
       // 只 @ 不说话（光喊一声）：不回脚本味的固定提示句——按号主定版（v0.6.6 起会话类
       // 不发罐头回复），替成一句「在吗」当问题走模型，让它用人设自然接话。
@@ -1978,6 +1983,25 @@ return out;
     if (sayMatch && !/^说(得好|得|明|不|不定|白|实话|啥|什么)/.test(question)) {
       forceVoice = true;
       question = sayMatch[1].trim() || question;
+    }
+
+    // 裸工具命令直达（v0.9.18）：「掷骰子」「塔罗牌」这类口令直接执行工具、一条消息
+    // 发结果，不经模型裁量（经模型时它常先解释、发链接、反问要不要抽，体验差；原项目
+    // 机器人是即问即抽）。执行失败就落回下面的正常管线。
+    const directCmd = directToolCommand(question);
+    if (directCmd) {
+      try {
+        const directCtx = { chatId, senderId, senderName: speakerName, timezone: config.timezone, logger, outbox: [], store: toolStore, imageSearch: imageSearchImpl, client };
+        const directResult = await executeTool(directCmd.name, directCmd.args, directCtx);
+        if (directResult) {
+          const cleanDirect = scrubSecrets(String(directResult), collectSecrets(config));
+          afterAnswer(chatId, senderId, speakerName, parsed.question, cleanDirect);
+          await editPlaceholderText(msg.peerId, placeholder.id, cleanDirect.slice(0, TG_MESSAGE_LIMIT));
+          return;
+        }
+      } catch (err) {
+        logger.error(`裸工具命令直达失败（${directCmd.name}）：${err.message}`);
+      }
     }
 
     // 联网搜索：问题适合搜时先搜再把结果拼进问题让模型作答。
@@ -2040,7 +2064,7 @@ return out;
 
     const history = store.get(chatId, senderId);
     const messages = [
-      { role: "system", content: buildSystemParts(senderId, speakerName, chatId) },
+      { role: "system", content: buildSystemParts(senderId, speakerName, chatId, speakerUsername) },
       ...history,
       { role: "user", content: question },
     ];
@@ -2309,25 +2333,33 @@ return out;
         return;
       }
 
-      // 发言者显示名懒加载（记录、身份段、历史标签共用，只取一次）。
+      // 发言者对象懒加载（名字、用户名共用同一次取，只取一次）：用户名要喂给模型，
+      // 它才知道怎么 @ 对方——否则它会以为自己不知道用户名、还让对方手动发（v0.9.18 群内实测）。
       let senderObjPromise = null;
-      const getSpeakerName = async () => {
+      const getSenderObj = () => {
         if (!senderObjPromise) {
           senderObjPromise = (async () => {
-            // 匿名发言没有真实发送者对象：有签名用签名，否则就叫匿名成员。
-            if (anonymousSender) return String(msg.postAuthor || "").trim() || "匿名成员";
+            // 匿名发言没有真实发送者对象。
+            if (anonymousSender) return null;
             try {
-              if (typeof event.getSender === "function") {
-                const sender = await event.getSender();
-                if (sender) return String([sender.firstName, sender.lastName].filter(Boolean).join(" ") || sender.username || "").trim();
-              }
+              if (typeof event.getSender === "function") return await event.getSender();
             } catch {
-              // 取不到名字不影响主流程。
+              // 取不到不影响主流程。
             }
-            return "";
+            return null;
           })();
         }
         return senderObjPromise;
+      };
+      const getSpeakerName = async () => {
+        if (anonymousSender) return String(msg.postAuthor || "").trim() || "匿名成员";
+        const sender = await getSenderObj();
+        if (sender) return String([sender.firstName, sender.lastName].filter(Boolean).join(" ") || sender.username || "").trim();
+        return "";
+      };
+      const getSpeakerUsername = async () => {
+        const sender = await getSenderObj();
+        return sender && sender.username ? String(sender.username).trim() : "";
       };
 
       // 称呼捕捉：任何人亲口在自己消息里说「叫我 X」，就把 X 记进他的档案（持久化）。
@@ -2579,11 +2611,12 @@ return out;
 
       // 发言者显示名（给历史标签与身份段用）；拿不到就留空，不影响主流程。
       const speakerName = await getSpeakerName();
+      const speakerUsername = await getSpeakerUsername();
 
       // 识图池为空、但用户这句带了真实文字时，不走识图（别用「识图不可用」把文字问题
       // 一起打发），落回下面的普通文字问答；纯图无文字时仍走识图报错（v0.9.11）。
       if (photoSource && !(flattenVisionPool(config.visionPool).length === 0 && String(text || "").trim())) {
-        await handleVisionChat(msg, chatId, senderId, speakerName, parsed, photoSource);
+        await handleVisionChat(msg, chatId, senderId, speakerName, parsed, photoSource, speakerUsername);
         return;
       }
 
@@ -2592,7 +2625,7 @@ return out;
         return;
       }
 
-      await handleChat(msg, chatId, senderId, speakerName, parsed);
+      await handleChat(msg, chatId, senderId, speakerName, parsed, speakerUsername);
     } catch (err) {
       // 兜底：处理消息时的任何异常都进日志，不能让它无声消失。
       logger.error(`处理消息时出错：${err.stack || err.message || err}`);
