@@ -44,6 +44,8 @@ buildSerperRequest,
 parseSerperResults,
 buildTavilyRequest,
 parseTavilyResults,
+buildBraveSearchUrl,
+parseBraveMarkdown,
 buildBingSearchUrl,
 parseBingMarkdown,
 formatSearchContext,
@@ -265,14 +267,14 @@ const usageStats = deps.usageStats || new UsageStats(null);
 const records = deps.records || new GroupRecords(null);
 const toolStore = deps.toolStore || new ToolStore(null);
 const fetchImpl = deps.fetchImpl || ((...args) => globalThis.fetch(...args));
-// Lightpanda 搜索执行器（可注入点，测试可换假实现）：拉起本机 Lightpanda 抓 Bing 结果页 Markdown。
+// Lightpanda 搜索执行器（可注入点，测试可换假实现）：拉起本机 Lightpanda 抓给定地址的结果页 Markdown。
 const lightpandaFetch =
 deps.lightpandaFetch ||
-((bin, query) =>
+((bin, url) =>
 new Promise((resolve, reject) => {
 execFile(
 bin || "/opt/lightpanda/lightpanda",
-["fetch", "--dump", "markdown", buildBingSearchUrl(query)],
+["fetch", "--dump", "markdown", url],
 {
 timeout: 30000,
 maxBuffer: 4 * 1024 * 1024,
@@ -942,7 +944,7 @@ return out;
         `默认提供方：${config.defaultProvider || "default"}`,
         `识图池：${flattenVisionPool(config.visionPool).length} 条`,
         `TTS：${config.ttsApiBase && config.ttsApiKey ? "已配置" : "未配置"} / 音色：${Object.keys(config.voiceBook || {}).length} 个`,
-        `搜索：${config.searchProvider === "lightpanda" ? "Lightpanda（本机抓 Bing，免 key）" : config.searchApiKey ? "接口（key 已配置）" : "未配置"}`,
+        `搜索：${config.searchProvider === "lightpanda" ? "Lightpanda（本机搜索，免 key）" : config.searchApiKey ? "接口（key 已配置）" : "未配置"}`,
         `记录开启的群：${(config.recordGroups || []).length} 个`,
         `破甲：${(config.poJia || "").trim() ? "已设置" : "未设置"}`,
       ];
@@ -1945,10 +1947,21 @@ return out;
     if (plan) {
       try {
         if (plan.mode === "lightpanda") {
-          const md = await lightpandaFetch(config.lightpandaBin, plan.query);
-          const result = parseBingMarkdown(md);
+          // 引擎顺序：Brave 优先（自有索引，中英混排问题更可靠），解析不出再用 Bing 兜底。
+          let result = { text: "", urls: [] };
+          for (const attempt of [
+            async () => parseBraveMarkdown(await lightpandaFetch(config.lightpandaBin, buildBraveSearchUrl(plan.query))),
+            async () => parseBingMarkdown(await lightpandaFetch(config.lightpandaBin, buildBingSearchUrl(plan.query))),
+          ]) {
+            try {
+              result = await attempt();
+            } catch {
+              result = { text: "", urls: [] };
+            }
+            if (result.text) break;
+          }
           if (result.text) question = formatSearchContext(plan.mode, result.text, question);
-          else logger.error("搜索失败：Lightpanda 未解析出结果");
+          else logger.error("搜索失败：Lightpanda 两条引擎都未解析出结果");
         } else {
           const req =
             plan.mode === "tavily"
