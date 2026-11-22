@@ -1,8 +1,11 @@
 // 联网搜索：问题先过搜索引擎，把结果拼进问题文本再让模型作答。
-// 两条线（与 tgai 时代的机制等价）：
+// 接口线（与 tgai 时代的机制等价）：
 // - 问题里带「联网搜索」字样 → Tavily（深度搜索），关键词是去掉该字样后的问题；
 // - 其余非「本地型」问题（天气/时间/群信息/自我介绍这类不用搜的）→ Serper（Google 结果）。
-// 没有配搜索 key 时整条链不启用。请求构造与结果解析都是纯函数，可单测。
+// 没有配搜索 key 时接口线不启用。
+// 第三条线（v0.9.6）：searchProvider=lightpanda 时走本机 Lightpanda 抓 Bing 结果页，
+// 免 key、无额度；执行（拉起 Lightpanda 进程）在 handlers 里，结果页解析在本文件。
+// 请求构造与结果解析都是纯函数，可单测。
 
 export const DEFAULT_SERPER_BASE = "https://google.serper.dev/search";
 export const DEFAULT_TAVILY_BASE = "https://api.tavily.com/search";
@@ -36,16 +39,17 @@ const LOCAL_ONLY_KEYWORDS = [
 * @returns {{mode: "tavily", query: string} | {mode: "serper", query: string} | null}
 */
 export function planSearch(question, options = {}) {
-if (!options.hasKey) return null;
+const viaLightpanda = options.provider === "lightpanda";
+if (!viaLightpanda && !options.hasKey) return null;
 if (options.hasPhoto) return null;
 const q = String(question || "").trim();
 if (!q) return null;
 if (q.includes("联网搜索")) {
 const query = q.replace(/联网搜索/g, "").trim();
-return { mode: "tavily", query: query || q};
+return { mode: viaLightpanda ? "lightpanda" : "tavily", query: query || q};
 }
 if (LOCAL_ONLY_KEYWORDS.some((k) => q.includes(k))) return null;
-return { mode: "serper", query: q};
+return { mode: viaLightpanda ? "lightpanda" : "serper", query: q};
 }
 
 /** 构造 Serper 请求（纯函数）。 */
@@ -109,6 +113,78 @@ return `【${(r && r.title) || ""}】\n${(r && r.content) || ""}`;
 })
 .join("\n\n");
 return { text: text.trim(), urls};
+}
+
+export const BING_SEARCH_BASE = "https://www.bing.com/search";
+
+/** 构造 Bing 搜索页地址（Lightpanda 抓取用）。 */
+export function buildBingSearchUrl(query) {
+return `${BING_SEARCH_BASE}?q=${encodeURIComponent(String(query || ""))}`;
+}
+
+/**
+ * 解码 Bing 结果的跳转链接：ck/a 地址的 u 参数是 "a1" + base64（真实地址）。
+ * 解不出或不是 http(s) 时返回空串。
+ */
+export function decodeBingRedirect(url) {
+try {
+const u = new URL(String(url || "")).searchParams.get("u");
+if (!u || !u.startsWith("a1")) return "";
+const b64 = u.slice(2).replace(/-/g, "+").replace(/_/g, "/");
+const padded = b64 + "=".repeat((4 - (b64.length % 4)) % 4);
+const real = Buffer.from(padded, "base64").toString("utf-8");
+return /^https?:\/\//.test(real) ? real : "";
+} catch {
+return "";
+}
+}
+
+/** 清理 Bing Markdown 里的加粗标记与转义符。 */
+function cleanBingText(s) {
+return String(s || "")
+.replace(/\*\*/g, "")
+.replace(/\\(.)/g, "$1")
+.replace(/\s+/g, " ")
+.trim();
+}
+
+/**
+ * 解析 Lightpanda 抓回的 Bing 结果页 Markdown。
+ * 结果标题是 `## [标题](ck/a 跳转链接)`，跳转参数里藏着真实地址；
+ * 标题后到下一条结果之间的正文是摘要。解析不出返回空文本（调用方降级为不搜）。
+ */
+export function parseBingMarkdown(md, limit = 5) {
+const lines = String(md || "").split("\n");
+const items = [];
+const seen = new Set();
+let cur = null;
+const flush = () => {
+if (!cur) return;
+const snippet = cleanBingText(cur.snippetLines.join(" ").replace(/\[Read more\]\([^)]*\)/g, "")).slice(0, 200);
+items.push({ title: cur.title, url: cur.url, snippet });
+cur = null;
+};
+for (const line of lines) {
+const h = line.match(/^## \[(.+)\]\((https?:\/\/[^)\s]+)\)\s*$/);
+if (h) {
+flush();
+const url = decodeBingRedirect(h[2]);
+if (url && !seen.has(url)) {
+seen.add(url);
+cur = { title: cleanBingText(h[1]), url, snippetLines: [] };
+}
+continue;
+}
+if (/^\d+\.\s*$/.test(line)) {
+flush();
+continue;
+}
+if (cur) cur.snippetLines.push(line);
+}
+flush();
+const picked = items.slice(0, limit);
+const text = picked.map((r, i) => `${i + 1}. ${r.title}\n ${r.url}\n ${r.snippet}`).join("\n");
+return { text: text.trim(), urls: picked.map((r) => r.url) };
 }
 
 /** 把搜索结果拼进问题文本（模型看到的是带出处材料的问题）。 */
