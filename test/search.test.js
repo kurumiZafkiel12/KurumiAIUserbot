@@ -8,6 +8,9 @@ buildSerperRequest,
 parseSerperResults,
 buildTavilyRequest,
 parseTavilyResults,
+buildBingSearchUrl,
+decodeBingRedirect,
+parseBingMarkdown,
 formatSearchContext,
 maskSearchKey,
 } from "../src/search.js";
@@ -68,4 +71,48 @@ assert.ok(out.startsWith("【搜索结果】"));
 assert.ok(out.endsWith("原问题"));
 assert.equal(maskSearchKey("abcdefgh1234"), "****1234");
 assert.equal(maskSearchKey(""), "");
+});
+
+test("planSearch：lightpanda 后端免 key 也能计划，本地型问题与带图照样不搜", () => {
+assert.deepEqual(planSearch("今天有什么新闻", { hasKey: false, provider: "lightpanda" }), { mode: "lightpanda", query: "今天有什么新闻" });
+assert.deepEqual(planSearch("联网搜索 明天东京天气", { provider: "lightpanda" }), { mode: "lightpanda", query: "明天东京天气" });
+assert.equal(planSearch("今天天气怎么样", { provider: "lightpanda" }), null);
+assert.equal(planSearch("这是什么", { provider: "lightpanda", hasPhoto: true }), null);
+});
+
+test("Lightpanda 线：Bing 地址构造、Bing 跳转解码、Bing Markdown 解析", () => {
+assert.ok(buildBingSearchUrl("a b&c").includes("q=a%20b%26c"));
+const real = "https://chat.deepseek.com/sign_in";
+const u = "a1" + Buffer.from(real, "utf-8").toString("base64").replace(/=+$/, "");
+const ck = `https://www.bing.com/ck/a?!&&p=xyz&u=${u}&ntb=1`;
+assert.equal(decodeBingRedirect(ck), real);
+assert.equal(decodeBingRedirect("https://example.com/nope"), "");
+assert.equal(decodeBingRedirect("not a url"), "");
+
+const u2 = "a1" + Buffer.from("https://www.deepseek.com/", "utf-8").toString("base64").replace(/=+$/, "");
+const md = [
+"Skip to content",
+"2. ",
+"deepseek.com",
+"https://chat.**deepseek**.com",
+"",
+`## [**DeepSeek** \\- Into the Unknown](${ck})`,
+"",
+"Chat with **DeepSeek** AI, your assistant. [Read more](https://www.bing.com/ck/a?x=1)",
+"3. ",
+"deepseek.com",
+"",
+`## [**DeepSeek** 官网](https://www.bing.com/ck/a?!&&p=abc&u=${u2}&ntb=1)`,
+"",
+"深度求索官方网站。",
+"## [无关标题](https://example.com/direct)",
+"这行不该被收录。",
+].join("\n");
+const { text, urls } = parseBingMarkdown(md);
+assert.deepEqual(urls, [real, "https://www.deepseek.com/"]);
+assert.ok(text.includes("1. DeepSeek - Into the Unknown"));
+assert.ok(text.includes("Chat with DeepSeek AI, your assistant."));
+assert.ok(!text.includes("Read more"));
+assert.ok(!text.includes("无关标题"));
+assert.deepEqual(parseBingMarkdown(""), { text: "", urls: [] });
 });
