@@ -344,6 +344,6 @@ test("提醒修复（v0.9.15）：工具门命中「定时提醒，1分钟后艾
   assert.ok(atMs >= before + 55_000 && atMs <= Date.now() + 65_000, `at 应约为 60 秒后，实际 ${saved.at}`);
   assert.ok(out.includes("提醒已设"), out);
   const fire = reminderFireText({ senderId: "42", senderName: "柠檬", text: "艾特我" });
-  assert.equal(fire, "[柠檬](tg://user?id=42) 提醒：艾特我");
-  assert.equal(reminderFireText({ senderId: "42", senderName: "", text: "x" }), "[你](tg://user?id=42) 提醒：x");
+  assert.equal(fire, "柠檬 提醒：艾特我");
+  assert.equal(reminderFireText({ senderId: "42", senderName: "", text: "x" }), "你 提醒：x");
 });
