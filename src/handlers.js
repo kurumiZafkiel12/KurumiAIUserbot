@@ -1945,8 +1945,13 @@ return out;
     }
 
     // 联网搜索：问题适合搜时先搜再把结果拼进问题让模型作答。
-    // 后端二选一：配了 key 走 Serper/Tavily 接口；searchProvider=lightpanda 走本机 Lightpanda 抓 Bing（免 key）。
-    const plan = planSearch(question, { hasKey: Boolean(config.searchApiKey), hasPhoto: false, provider: config.searchProvider });
+    // 后端二选一：配了 key 走 Serper/Tavily 接口；searchProvider=lightpanda 走本机 Lightpanda 抓 Brave/Bing（免 key）。
+    // 话题兜底：用户只说「去网上搜」这类指令、没带主题时，拿上一条用户问题当搜索主题。
+    const prevUserMsg = [...store.get(chatId, senderId)].reverse().find((m) => m.role === "user");
+    let fallbackQuery = prevUserMsg ? String(prevUserMsg.content || "") : "";
+    const labelMatch = fallbackQuery.match(/^[^：:\n]{1,12}[：:]([\s\S]+)$/);
+    if (labelMatch) fallbackQuery = labelMatch[1];
+    const plan = planSearch(question, { hasKey: Boolean(config.searchApiKey), hasPhoto: false, provider: config.searchProvider, fallbackQuery });
     if (plan) {
       try {
         if (plan.mode === "lightpanda") {
@@ -2520,7 +2525,9 @@ return out;
       // 发言者显示名（给历史标签与身份段用）；拿不到就留空，不影响主流程。
       const speakerName = await getSpeakerName();
 
-      if (photoSource) {
+      // 识图池为空、但用户这句带了真实文字时，不走识图（别用「识图不可用」把文字问题
+      // 一起打发），落回下面的普通文字问答；纯图无文字时仍走识图报错（v0.9.11）。
+      if (photoSource && !(flattenVisionPool(config.visionPool).length === 0 && String(text || "").trim())) {
         await handleVisionChat(msg, chatId, senderId, speakerName, parsed, photoSource);
         return;
       }
