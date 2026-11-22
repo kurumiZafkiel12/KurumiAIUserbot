@@ -10,6 +10,7 @@ import {
   unitConvertTool, dateDiffTool, dateAddTool, randomTool, passwordGenTool, colorTool,
   diceTool, coinTool, drawLotTool, tarotTool, horoscopeTool, almanacTool, worldTimeTool,
   toolGate, executeTool, TOOL_DEFS, extractTextToolCalls, stripTextToolCalls,
+  resolveStockSymbol, parseYahooChart, parseTencentQuote,
 } from "../src/tools.js";
 import { ToolStore } from "../src/toolstore.js";
 import { chatWithTools } from "../src/toolchat.js";
@@ -261,4 +262,59 @@ test("天气三级兜底：两个地理编码都落空时用 wttr.in 出天气�
   } finally {
     globalThis.fetch = realFetch;
   }
+});
+
+test("stock_quote：代码解析（中文名/别名/直通/未知）", () => {
+  assert.deepEqual(resolveStockSymbol("标普500"), { symbol: "^GSPC", name: "标普500指数" });
+  assert.deepEqual(resolveStockSymbol("Spx"), { symbol: "^GSPC", name: "标普500指数" });
+  assert.deepEqual(resolveStockSymbol("标普500指数"), { symbol: "^GSPC", name: "标普500指数" });
+  assert.deepEqual(resolveStockSymbol("英伟达"), { symbol: "NVDA", name: "英伟达" });
+  assert.deepEqual(resolveStockSymbol("NVDA"), { symbol: "NVDA", name: "NVDA" });
+  assert.deepEqual(resolveStockSymbol("0700.HK"), { symbol: "0700.HK", name: "0700.HK" });
+  assert.deepEqual(resolveStockSymbol("恒生"), { symbol: "^HSI", name: "恒生指数" });
+  assert.equal(resolveStockSymbol("不存在的东西"), null);
+  assert.equal(resolveStockSymbol(""), null);
+});
+
+test("stock_quote：Yahoo chart 解析取最后收盘与前收", () => {
+  const data = {
+    chart: {
+      result: [{
+        meta: { currency: "USD", exchangeTimezoneName: "America/New_York", chartPreviousClose: 7000 },
+        timestamp: [1795000000, 1795086400, 1795172800],
+        indicators: { quote: [{ close: [7100.5, 7175.83, 6910.39], open: [7090, 7160, 7150.39], high: [7120, 7200, 7198.67], low: [7080, 7140, 6882.66] }] },
+      }],
+    },
+  };
+  const q = parseYahooChart(data);
+  assert.equal(q.close, 6910.39);
+  assert.equal(q.prevClose, 7175.83);
+  assert.equal(q.open, 7150.39);
+  assert.equal(q.high, 7198.67);
+  assert.equal(q.low, 6882.66);
+  assert.equal(q.currency, "USD");
+  assert.match(q.date, /^2026-11-/);
+  assert.equal(parseYahooChart({}), null);
+  assert.equal(parseYahooChart({ chart: { result: [{ indicators: { quote: [{ close: [null] }] } }] } }), null);
+});
+
+test("stock_quote：腾讯行情文本解析（动态定位时间字段）", () => {
+  const text = 'v_usINX="200~标普500~.INX~6910.39~7175.83~7150.39~4727416323~0~0~6893.98~0~0~0~0~0~0~0~0~0~7026.48~0~0~0~0~0~0~0~0~0~~2026-11-20 16:35:54~-265.44~-3.70~7198.67~6882.66~USD~4727416323";';
+  const q = parseTencentQuote(text);
+  assert.equal(q.close, 6910.39);
+  assert.equal(q.prevClose, 7175.83);
+  assert.equal(q.open, 7150.39);
+  assert.equal(q.date, "2026-11-20");
+  assert.equal(q.change, -265.44);
+  assert.equal(q.pct, -3.7);
+  assert.equal(q.high, 7198.67);
+  assert.equal(q.low, 6882.66);
+  assert.equal(parseTencentQuote(""), null);
+});
+
+test("stock_quote：工具门命中股价类问题且工具已注册", () => {
+  assert.equal(toolGate("Spx收盘价是多少"), true);
+  assert.equal(toolGate("英伟达股价怎么样"), true);
+  assert.equal(toolGate("恒生指数今天多少点"), true);
+  assert.ok(TOOL_DEFS.some((t) => t.name === "stock_quote"));
 });
