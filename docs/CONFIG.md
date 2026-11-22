@@ -194,7 +194,7 @@ recordGroups 是开启了聊天记录的群 ID 列表（`/ai 开启记录`）；
 
 ### searchProvider / lightpandaBin（字符串，可选，默认空）
 
-搜索后端选择：设 `"searchProvider": "lightpanda"` 后改走本机 Lightpanda 抓 Bing 结果页（免 key、无额度），此时 searchApiKey 不再是启用条件；不设或设其它值则走上面的 key 接口线。.env 的 `SEARCH_PROVIDER` 可作兜底。`lightpandaBin` 是 Lightpanda 可执行文件路径，默认 `/opt/lightpanda/lightpanda`，.env 的 `LIGHTPANDA_BIN` 可作兜底。Lightpanda 需自行安装（官方 nightly 二进制），机器人只负责调用。
+搜索后端选择：设 `"searchProvider": "lightpanda"` 后改走本机 Lightpanda 抓搜索引擎结果页（Brave 优先、Bing 兜底，免 key、无额度），此时 searchApiKey 不再是启用条件；不设或设其它值则走上面的 key 接口线。.env 的 `SEARCH_PROVIDER` 可作兜底。`lightpandaBin` 是 Lightpanda 可执行文件路径，默认 `/opt/lightpanda/lightpanda`，.env 的 `LIGHTPANDA_BIN` 可作兜底。Lightpanda 需自行安装（官方 nightly 二进制），机器人只负责调用。
 
 ### customName（对象，可选，程序也会维护）
 
