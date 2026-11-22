@@ -169,3 +169,12 @@ test("v0.9.0 没填 API 凭证时用内置 Desktop 公开凭证（手机号直�
   assert.equal(cfg2.apiCredentialSource, "custom");
   assert.equal(cfg2.apiId, 12345);
 });
+
+test("v0.9.2 私聊门禁默认值与生产对齐：不写 privateChat 时为 admins，写 all 才全开", () => {
+  writeJson({});
+  assert.equal(loadConfig().privateChat, "admins");
+  writeJson({ privateChat: "all" });
+  assert.equal(loadConfig().privateChat, "all");
+  writeJson({ privateChat: "admins" });
+  assert.equal(loadConfig().privateChat, "admins");
+});
