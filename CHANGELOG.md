@@ -1,5 +1,9 @@
 # 更新日志
 
+## v0.9.7（2026-11-22）
+
+- 【Lightpanda 搜索结果修正：中文市场参数 + 直达链接 + 资源文件过滤】v0.9.6 上线实测踩坑：不带市场参数时 Bing 按机房 IP 所在市场出结果，中文问题给回一堆微软自家页面；部分结果是直达链接（非 ck/a 跳转）被旧解析漏掉；还混进过字体文件这类资源链接。改：Bing 地址固定带 mkt=zh-CN 与 setlang=zh-CN；解析器接受直达链接（必应/微软自家链接除外），并按扩展名滤掉 woff/css/js/图片等资源文件。生产实测：中文问题已能返回对题的中文结果（原神问题返回官网/百科等）
+
 ## v0.9.6（2026-11-22）
 
 - 【联网搜索新增 Lightpanda 后端：免 key、无额度】原搜索链必须先配 Serper/Tavily 的 key 才启用，没 key 时问时效问题只能靠模型记忆。改：config.json 设 `"searchProvider": "lightpanda"` 后，搜索改走本机 Lightpanda（需单独安装，默认路径 /opt/lightpanda/lightpanda，可用 lightpandaBin 或 .env 的 LIGHTPANDA_BIN 覆盖）抓 Bing 结果页并解析（标题/真实链接/摘要，Bing 跳转链接自动解码），不配 key 也能搜、无调用额度；没设 searchProvider 时维持原 key 接口线（Serper 日常线 +「联网搜索」走 Tavily）。/ai 状态的搜索一行改为显示当前后端。实测（生产机）：Lightpanda 抓 Bing 结果页可正常解析出 5 条结果；DuckDuckGo 结果页对机房 IP 有机器人验证、不可用，故选 Bing。失败时与原先一致：记日志后降级为不搜、照常回答
