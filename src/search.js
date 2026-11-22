@@ -117,9 +117,10 @@ return { text: text.trim(), urls};
 
 export const BING_SEARCH_BASE = "https://www.bing.com/search";
 
-/** 构造 Bing 搜索页地址（Lightpanda 抓取用）。 */
+/** 构造 Bing 搜索页地址（Lightpanda 抓取用）。必须带中文市场参数：
+ * 不带时 Bing 按机房 IP 的市场出结果，中文问题会给一堆不相关页面（实测踩坑）。 */
 export function buildBingSearchUrl(query) {
-return `${BING_SEARCH_BASE}?q=${encodeURIComponent(String(query || ""))}`;
+return `${BING_SEARCH_BASE}?q=${encodeURIComponent(String(query || ""))}&mkt=zh-CN&setlang=zh-CN`;
 }
 
 /**
@@ -168,7 +169,11 @@ for (const line of lines) {
 const h = line.match(/^## \[(.+)\]\((https?:\/\/[^)\s]+)\)\s*$/);
 if (h) {
 flush();
-const url = decodeBingRedirect(h[2]);
+const raw = h[2];
+let url = "";
+if (raw.includes("/ck/a?")) url = decodeBingRedirect(raw);
+else if (!/(?:^|\.)bing\.com\//.test(raw) && !/microsoft\.com\//.test(raw)) url = raw;
+if (url && /\.(?:woff2?|ttf|css|js|png|jpe?g|gif|svg|ico|webp|mp4|zip)(?:[?#]|$)/i.test(url)) url = "";
 if (url && !seen.has(url)) {
 seen.add(url);
 cur = { title: cleanBingText(h[1]), url, snippetLines: [] };
