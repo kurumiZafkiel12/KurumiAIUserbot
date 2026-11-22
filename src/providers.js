@@ -31,6 +31,7 @@ export class ProviderPool {
       this.entries.push({
         name: def.name,
         model: def.model,
+        modelAuto: def.modelAuto === true, // 模型名是启动时自动识别的（/ai 状态里标出来）
         baseURL: def.baseURL,
         image: def.image === true, // 生图提供方（/ai 加生图api）：不进聊天池，只用来生图
         disabled: def.disabled === true, // 被号主禁用（/ai 禁用api）：不参与挑选
@@ -42,7 +43,7 @@ export class ProviderPool {
       });
     }
     if (this.entries.length === 0) {
-      throw new Error("没有任何可用的模型提供方：请至少在 .env 里填好 AI_API_BASE / AI_API_MODEL（或在 config.json 配置 customProviders）。");
+      throw new Error("没有任何可用的模型提供方：请至少在 .env 里填好 AI_API_BASE（模型名可留空，启动时自动识别；或在 config.json 配置 customProviders）。");
     }
   }
 
@@ -246,7 +247,7 @@ export class ProviderPool {
       const cooling = e.cooldownUntil > Date.now() ? "（冷却中）" : "";
       const off = e.disabled ? "（已禁用）" : "";
       const img = e.image ? "（生图）" : "";
-      return `- ${e.name}（${e.model}）：今日 ${limitText}${cooling}${off}${img}`;
+      return `- ${e.name}（${e.model}${e.modelAuto ? "，自动识别" : ""}）：今日 ${limitText}${cooling}${off}${img}`;
     });
     return lines.join("\n");
   }
