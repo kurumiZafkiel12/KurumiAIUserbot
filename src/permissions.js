@@ -11,7 +11,7 @@
 // - ownerId：字符串，创建者数字 ID（可能为空，表示未配）
 // - adminIds：字符串数组，管理员数字 ID 名单
 // - guestIds：字符串数组，访客数字 ID 名单（仅私聊放行用）
-// - privateChat："all"（默认，人人可私聊）或 "admins"（仅创建者+管理员+访客可私聊）
+// - privateChat："admins"（仅创建者+管理员+访客可私聊）或 "all"（人人可私聊）；loadConfig 缺省解析为 "admins"
 
 /** 把任意来源的 ID 统一成字符串（数字 ID 经常以 number 形式出现）。 */
 function normId(userId) {
@@ -75,8 +75,8 @@ return isOwner(userId, config);
 
 /**
 * 能不能私聊机器人。
-* privateChat 缺省或非法值时按 "all" 处理（人人可私聊，保持旧行为）；
-* "admins" 时仅创建者、管理员与访客可私聊，群聊不受此函数管辖。
+* privateChat 为 "admins" 时仅创建者、管理员与访客可私聊，群聊不受此函数管辖；
+* 其他值不限制（裸对象缺省即属此类；正式运行的 config 由 loadConfig 解析，缺省就是 "admins"）。
 */
 export function canUsePrivateChat(userId, config) {
 if (!config || config.privateChat!== "admins") return true;
