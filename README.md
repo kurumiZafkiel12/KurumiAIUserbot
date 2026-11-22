@@ -45,6 +45,7 @@
 - [第 5 步：首次登录](#第-5-步首次登录)
 - [第 6 步：启动并测试](#第-6-步启动并测试)
 - [第 7 步：让它 24 小时在线（systemd）](#第-7-步让它-24-小时在线systemd)
+- [升级到新版](#升级到新版)
 - [使用方法](#使用方法)
 - [配置多模型（config.json）](#配置多模型configjson)
 - [费用大概多少](#费用大概多少)
@@ -270,6 +271,23 @@ sudo systemctl stop kurumiaiuserbot     # 停止
 sudo systemctl status kurumiaiuserbot   # 看状态
 journalctl -u kurumiaiuserbot -f        # 实时看日志（排错就看这个；Ctrl+C 退出看日志，不影响机器人运行）
 ```
+
+## 升级到新版
+
+出新版后照这 8 步升级，一条一条来。`.env`、`config.json`、`.ai-session` 和记事本等数据文件都不在 git 里，升级不会动它们，不用重填配置、不用重新登录。
+
+```bash
+cd /opt/kurumiaiuserbot                 # 1. 进项目目录（你的安装目录可能不同，按实际改）
+sudo systemctl stop kurumiaiuserbot     # 2. 先停服务（还没装 systemd 的跳过，报错正常）
+git stash                               # 3. 收起本地改动（没改动会回 No local changes，正常）
+git pull                                # 4. 拉新版（看到 Fast-forward 就是拉到了）
+grep '"version"' package.json           # 5. 验版本：打印的版本号对上目标版本才算数
+npm install                             # 6. 对齐依赖（锁文件换了新版时必须跑）
+sudo systemctl start kurumiaiuserbot    # 7. 启动服务（没装 systemd 的跳过，改手动 npm start）
+sudo systemctl status kurumiaiuserbot   # 8. 验收：active (running)，再看 journalctl 有「登录成功」
+```
+
+第 3 步说明：`git pull` 若报 `Your local changes to package-lock.json would be overwritten`，是当初 `npm install` 在本地重写过锁文件，不是你的配置出问题——先 `git stash` 再 pull 就能过。stash 起来的是旧锁文件改动，不要再 `git stash pop` 拿回来。
 
 ## 使用方法
 
