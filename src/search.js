@@ -3,8 +3,10 @@
 // - 问题里带「联网搜索」字样 → Tavily（深度搜索），关键词是去掉该字样后的问题；
 // - 其余非「本地型」问题（天气/时间/群信息/自我介绍这类不用搜的）→ Serper（Google 结果）。
 // 没有配搜索 key 时接口线不启用。
-// 第三条线（v0.9.6）：searchProvider=lightpanda 时走本机 Lightpanda 抓 Bing 结果页，
+// 第三条线（v0.9.6）：searchProvider=lightpanda 时走本机 Lightpanda 抓搜索引擎结果页，
 // 免 key、无额度；执行（拉起 Lightpanda 进程）在 handlers 里，结果页解析在本文件。
+// 引擎顺序（v0.9.8）：Brave 优先、Bing 兜底——Bing 对机房 IP + 中英混排问题
+// （如「Spx收盘价」）会给不相关结果，Brave 自有索引在这类问题上可靠得多。
 // 请求构造与结果解析都是纯函数，可单测。
 
 export const DEFAULT_SERPER_BASE = "https://google.serper.dev/search";
@@ -113,6 +115,57 @@ return `【${(r && r.title) || ""}】\n${(r && r.content) || ""}`;
 })
 .join("\n\n");
 return { text: text.trim(), urls};
+}
+
+export const BRAVE_SEARCH_BASE = "https://search.brave.com/search";
+
+/** 构造 Brave 搜索页地址（Lightpanda 抓取用）。 */
+export function buildBraveSearchUrl(query) {
+return `${BRAVE_SEARCH_BASE}?q=${encodeURIComponent(String(query || ""))}`;
+}
+
+/** Brave 结果的展示地址（example.com › path › page）还原成真实地址。 */
+function braveDisplayUrlToReal(line) {
+const parts = cleanBingText(line).split("›").map((s) => s.trim()).filter(Boolean);
+if (!parts.length || !/^https?:\/\//.test(parts[0])) return "";
+return parts.join("/");
+}
+
+/**
+ * 解析 Lightpanda 抓回的 Brave 结果页 Markdown。
+ * 每条结果以 `[https://search.brave.com/go/...]` 跟踪链接为锚：
+ * 往上两行是展示地址与标题，往下一行是摘要（可能带「1 day ago - 」时间前缀）。
+ */
+export function parseBraveMarkdown(md, limit = 5) {
+const lines = String(md || "").split("\n");
+const prevTwo = (idx) => {
+const out = [];
+for (let j = idx - 1; j >= 0 && out.length < 2; j--) if (lines[j].trim()) out.push(lines[j].trim());
+return out;
+};
+const items = [];
+const seen = new Set();
+for (let i = 0; i < lines.length && items.length < limit; i++) {
+if (!lines[i].includes("search.brave.com/go/")) continue;
+const [titleRaw, urlLine] = prevTwo(i);
+const url = braveDisplayUrlToReal(urlLine || "");
+const title = cleanBingText(titleRaw || "");
+if (!url || !title || seen.has(url)) continue;
+let snippet = "";
+for (let j = i + 1; j < Math.min(i + 3, lines.length); j++) {
+if (lines[j].trim()) {
+snippet = lines[j].trim();
+break;
+}
+}
+snippet = cleanBingText(snippet)
+.replace(/^(?:\d+\s+(?:second|minute|hour|day|week|month|year)s?\s+ago|[A-Z][a-z]+ \d{1,2}, \d{4})\s*-\s*/, "")
+.slice(0, 200);
+seen.add(url);
+items.push({ title, url, snippet });
+}
+const text = items.map((r, i) => `${i + 1}. ${r.title}\n ${r.url}\n ${r.snippet}`).join("\n");
+return { text: text.trim(), urls: items.map((r) => r.url) };
 }
 
 export const BING_SEARCH_BASE = "https://www.bing.com/search";
