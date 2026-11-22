@@ -45,6 +45,12 @@ test("providerOverrides 合并：换 key 与禁用对 .env 的 default 也生效
   assert.equal(cfg.providerOverrides.default.disabled, true);
 });
 
+test("providerOverrides 合并：换模型对 .env 的 default 也生效（v0.9.4）", () => {
+  writeJson({ providerOverrides: { default: { model: "switched-model" } } });
+  const cfg = loadConfig();
+  assert.equal(cfg.providers[0].model, "switched-model");
+});
+
 test("新字段解析：usernameTrigger/defaultProvider/名单类与 dailyLimits", () => {
   writeJson({
     usernameTrigger: false,
