@@ -1987,7 +1987,7 @@ return out;
     let fallbackQuery = prevUserMsg ? String(prevUserMsg.content || "") : "";
     const labelMatch = fallbackQuery.match(/^[^：:\n]{1,12}[：:]([\s\S]+)$/);
     if (labelMatch) fallbackQuery = labelMatch[1];
-    const plan = planSearch(question, { hasKey: Boolean(config.searchApiKey), hasPhoto: false, provider: config.searchProvider, fallbackQuery });
+    const plan = planSearch(question, { hasKey: Boolean(config.searchApiKey), hasPhoto: false, provider: config.searchProvider, fallbackQuery, hasHistory: store.get(chatId, senderId).length > 0 });
     // AI 意图改写：识别平台/对象后改写查询词（失败回落清洗结果，不阻塞）。
     if (plan) plan.query = await rewriteSearchQuery(question, plan.query);
     if (plan) {
@@ -2077,7 +2077,13 @@ return out;
     const secrets = collectSecrets(config);
     // 工具门：问题可能需要内置工具（天气/汇率/热榜/换算等）时，先走工具调用管线；
     // 提供方不支持工具时 chatWithTools 返回 null，再回退到原来的流式聊天。
-    const useTools = toolGate(parsed.question);
+    // 续聊工具门（v0.9.18）：「抽」这类短回复本身不带工具关键词，但近几条上文刚聊到
+    // 塔罗/骰子等工具话题时，应走工具管线让模型接上文真调工具（抽牌），而不是普通闲聊。
+    const shortMsg = String(parsed.question || "").trim();
+    const recentGate =
+      shortMsg.length <= 4 &&
+      store.get(chatId, senderId).slice(-4).some((m) => toolGate(String(m.content || "")));
+    const useTools = toolGate(parsed.question) || recentGate;
     const toolOutbox = [];
     while (!answer) {
       const entry = pool.pick(tried, preferred);
