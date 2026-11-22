@@ -601,6 +601,153 @@ export async function goldPriceTool() {
   return lines.join("\n");
 }
 
+// 股票/指数行情（v0.9.9）：搜索摘要里没有具体价格，这类问题走行情接口。
+// 主源 Yahoo Finance chart API（免 key），美股/指数另有腾讯行情兜底。
+const STOCK_ALIASES = {
+"标普500": ["^GSPC", "标普500指数"], "标普": ["^GSPC", "标普500指数"], "SPX": ["^GSPC", "标普500指数"],
+"S&P500": ["^GSPC", "标普500指数"], "S&P 500": ["^GSPC", "标普500指数"], "SP500": ["^GSPC", "标普500指数"],
+"道琼斯": ["^DJI", "道琼斯工业指数"], "道指": ["^DJI", "道琼斯工业指数"], "DJI": ["^DJI", "道琼斯工业指数"],
+"纳斯达克": ["^IXIC", "纳斯达克综合指数"], "纳指": ["^IXIC", "纳斯达克综合指数"], "纳斯达克综合": ["^IXIC", "纳斯达克综合指数"],
+"纳指100": ["^NDX", "纳斯达克100指数"], "纳斯达克100": ["^NDX", "纳斯达克100指数"],
+"恒生": ["^HSI", "恒生指数"], "恒生指数": ["^HSI", "恒生指数"], "恒指": ["^HSI", "恒生指数"],
+"日经": ["^N225", "日经225指数"], "日经225": ["^N225", "日经225指数"],
+"上证": ["000001.SS", "上证指数"], "上证指数": ["000001.SS", "上证指数"],
+"深证成指": ["399001.SZ", "深证成指"], "创业板指": ["399006.SZ", "创业板指"],
+"沪深300": ["000300.SS", "沪深300指数"], "科创50": ["000688.SS", "科创50指数"],
+"英伟达": ["NVDA", "英伟达"], "苹果": ["AAPL", "苹果"], "特斯拉": ["TSLA", "特斯拉"],
+"微软": ["MSFT", "微软"], "谷歌": ["GOOGL", "谷歌"], "亚马逊": ["AMZN", "亚马逊"],
+"脸书": ["META", "Meta"], "台积电": ["TSM", "台积电"], "博通": ["AVGO", "博通"],
+"阿里巴巴": ["BABA", "阿里巴巴"], "腾讯": ["0700.HK", "腾讯控股"], "美团": ["3690.HK", "美团"],
+"小米": ["1810.HK", "小米集团"], "比亚迪": ["1211.HK", "比亚迪股份"],
+"茅台": ["600519.SS", "贵州茅台"], "贵州茅台": ["600519.SS", "贵州茅台"], "宁德时代": ["300750.SZ", "宁德时代"],
+};
+
+/** 把用户说的名字/代码解析成 Yahoo 代码；不认识返回 null。 */
+export function resolveStockSymbol(input) {
+const raw = String(input || "").replace(/\s+/g, " ").trim();
+if (!raw) return null;
+const stripped = raw.replace(/(股票|指数|收盘价|股价|行情)+$/g, "").trim();
+for (const key of [raw, raw.toUpperCase(), stripped, stripped.toUpperCase()]) {
+if (key && STOCK_ALIASES[key]) return { symbol: STOCK_ALIASES[key][0], name: STOCK_ALIASES[key][1] };
+}
+const upper = raw.toUpperCase();
+if (/^[A-Z0-9.^=-]{1,15}$/.test(upper) && /[A-Z]/.test(upper)) return { symbol: upper, name: upper };
+return null;
+}
+
+/** 解析 Yahoo chart API 返回，取最后一根有收盘价的日线与前一根。 */
+export function parseYahooChart(data) {
+const r = data && data.chart && Array.isArray(data.chart.result) ? data.chart.result[0] : null;
+if (!r) return null;
+const q = (r.indicators && r.indicators.quote && r.indicators.quote[0]) || {};
+const closes = q.close || [];
+let last = -1;
+for (let i = closes.length - 1; i >= 0; i--) if (typeof closes[i] === "number") { last = i; break; }
+if (last < 0) return null;
+let prev = -1;
+for (let i = last - 1; i >= 0; i--) if (typeof closes[i] === "number") { prev = i; break; }
+const meta = r.meta || {};
+let date = "";
+const ts = (r.timestamp || [])[last];
+if (ts) {
+try {
+date = new Intl.DateTimeFormat("en-CA", { timeZone: meta.exchangeTimezoneName || "UTC", year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date(ts * 1000));
+} catch {
+date = new Date(ts * 1000).toISOString().slice(0, 10);
+}
+}
+return {
+close: closes[last],
+prevClose: prev >= 0 ? closes[prev] : (typeof meta.chartPreviousClose === "number" ? meta.chartPreviousClose : null),
+open: q.open && typeof q.open[last] === "number" ? q.open[last] : null,
+high: q.high && typeof q.high[last] === "number" ? q.high[last] : null,
+low: q.low && typeof q.low[last] === "number" ? q.low[last] : null,
+date, currency: meta.currency || "",
+};
+}
+
+function tencentCodeFor(symbol) {
+const map = { "^GSPC": "usINX", "^DJI": "usDJI", "^IXIC": "usIXIC", "^NDX": "usNDX" };
+if (map[symbol]) return map[symbol];
+if (/^[A-Z]{1,5}$/.test(symbol)) return `us${symbol}`;
+return null;
+}
+
+/** 解析腾讯行情（qt.gtimg.cn）的 ~ 分隔文本；只取数字字段，不依赖名称编码。 */
+export function parseTencentQuote(text) {
+const m = String(text || "").match(/="([^"]*)"/);
+if (!m) return null;
+const f = m[1].split("~");
+const num = (v) => {
+const n = Number(v);
+return Number.isFinite(n) ? n : null;
+};
+const close = num(f[3]);
+if (close === null) return null;
+const dtIdx = f.findIndex((x) => /^\d{4}-\d{2}-\d{2}/.test(x));
+return {
+close,
+prevClose: num(f[4]),
+open: num(f[5]),
+date: dtIdx >= 0 ? f[dtIdx].slice(0, 10) : "",
+change: dtIdx >= 0 ? num(f[dtIdx + 1]) : null,
+pct: dtIdx >= 0 ? num(f[dtIdx + 2]) : null,
+high: dtIdx >= 0 ? num(f[dtIdx + 3]) : null,
+low: dtIdx >= 0 ? num(f[dtIdx + 4]) : null,
+currency: "USD",
+};
+}
+
+export async function stockQuoteTool(query) {
+const resolved = resolveStockSymbol(query);
+if (!resolved) {
+throw new Error(`不认识的股票/指数：${query}。可以问标普500、道琼斯、纳斯达克、恒生、上证，或英伟达、苹果、特斯拉等，也可以直接给代码如 NVDA、^GSPC、0700.HK。`);
+}
+const { symbol, name } = resolved;
+let q = null;
+let source = "Yahoo Finance";
+try {
+const data = await fetchJson(
+`https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?range=5d&interval=1d`,
+{ headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)" } },
+);
+q = parseYahooChart(data);
+} catch {
+q = null;
+}
+if (!q) {
+const tc = tencentCodeFor(symbol);
+if (tc) {
+try {
+const res = await fetchWithTimeout(`https://qt.gtimg.cn/q=${tc}`);
+if (res.ok) {
+q = parseTencentQuote(await res.text());
+if (q) source = "腾讯行情";
+}
+} catch {
+q = null;
+}
+}
+}
+if (!q) throw new Error(`行情接口暂时没返回 ${name} 的数据，稍后再试。`);
+const fmt = (n) => (typeof n === "number" ? n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : null);
+let chg = typeof q.change === "number" ? q.change : null;
+let pct = typeof q.pct === "number" ? q.pct : null;
+if (chg === null && typeof q.prevClose === "number" && q.prevClose) {
+chg = q.close - q.prevClose;
+pct = (chg / q.prevClose) * 100;
+}
+const lines = [`${name}（${symbol}）`, `收盘：${fmt(q.close)}${q.currency ? ` ${q.currency}` : ""}${q.date ? `（${q.date}）` : ""}`];
+if (chg !== null && pct !== null) {
+lines.push(`涨跌：${chg >= 0 ? "+" : ""}${fmt(chg)}（${pct >= 0 ? "+" : ""}${pct.toFixed(2)}%）${typeof q.prevClose === "number" ? `，前收 ${fmt(q.prevClose)}` : ""}`);
+}
+if (q.open !== null || q.high !== null || q.low !== null) {
+lines.push(`开 ${fmt(q.open) ?? "-"}｜高 ${fmt(q.high) ?? "-"}｜低 ${fmt(q.low) ?? "-"}`);
+}
+lines.push(`（数据来自 ${source}，仅供参考）`);
+return lines.join("\n");
+}
+
 export async function oilPriceTool() {
   // 国内油价免费源（oioweb）：部分网络不可达，拿不到就如实说。
   const data = await fetchJson("https://api.oioweb.cn/api/common/oil");
@@ -823,6 +970,7 @@ export const TOOL_DEFS = [
 { name: "crypto_price", description: "查加密货币价格（美元+人民币+24h 涨跌）。coins 是币种符号，逗号分隔，如 BTC,ETH。", parameters: S({ coins: STR}, ["coins"]), run: (a) => cryptoPriceTool(a.coins)},
 { name: "gold_price", description: "查国际金价（和银价），含人民币每克换算。用户问金价、黄金多少钱时调用。", parameters: S({}), run: () => goldPriceTool()},
 { name: "oil_price", description: "查国内油价（各省 92/95/0 号价格）。数据源偶尔不可达，失败会如实说明。", parameters: S({}), run: () => oilPriceTool()},
+{ name: "stock_quote", description: "查股票/指数行情：最新收盘价、涨跌、前收、今开、高低。symbol 填用户说的名字或代码，如 标普500、SPX、纳斯达克、恒生、上证、英伟达、NVDA、苹果、0700.HK。用户问股价、收盘价、指数点位时调用，不要用搜索结果里的链接猜价格。", parameters: S({ symbol: STR}, ["symbol"]), run: (a) => stockQuoteTool(a.symbol)},
 { name: "box_office", description: "查今日电影票房榜（猫眼数据）。接口偶尔被风控，失败会如实说明。", parameters: S({}), run: () => boxOfficeTool()},
 { name: "douban_movies", description: "豆瓣电影：mode=hot 看热门榜，mode=search 按片名搜索（给 query）。", parameters: S({ mode: STR, query: STR}, ["mode"]), run: (a) => doubanMoviesTool(a.mode, a.query)},
 { name: "wiki_lookup", description: "查百科知识。source 取 wikipedia（中文维基词条摘要）、wikidata（实体信息）、duckduckgo（即时答案）。", parameters: S({ query: STR, source: STR}, ["query"]), run: (a) => wikiTool(a.query, a.source)},
@@ -886,6 +1034,7 @@ return `工具 ${name} 这次没查到：${err.message}。请如实告诉用户�
 const GATE_WORDS = [
 "天气", "气温", "下雨", "下雪", "预报", "翻译", "译成", "翻成", "热搜", "热榜", "热门视频", "热度榜", "新闻", "热点", "头条",
 "汇率", "换算", "币价", "比特币", "以太坊", "btc", "eth", "金价", "黄金", "白银价格", "油价", "票房",
+"股价", "收盘", "股票", "股市", "大盘", "指数", "标普", "道琼斯", "纳斯达克", "纳指", "恒生", "日经", "上证",
 "豆瓣", "维基", "百科", "wikidata", "duckduckgo", "归属", "ip地址", "一言", "古诗", "诗词", "图书",
 "找书", "二维码", "短网址", "短链接", "还原", "base64", "摩斯", "哈希", "md5", "sha1", "sha256", "uuid",
 "json", "进制", "单位", "多少天", "日期差", "随机数", "随机", "抽一个", "生成密码", "密码生成", "密码", "字数", "颜色",
