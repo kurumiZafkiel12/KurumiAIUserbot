@@ -951,12 +951,20 @@ export function worldTimeTool(place, defaultTz) {
 
 export function addReminderTool(args, ctx) {
   if (!ctx || !ctx.store) throw new Error("提醒功能未就绪");
-  const at = new Date(args.at);
-  if (Number.isNaN(at.getTime())) throw new Error("提醒时间格式不对，需要 ISO 时间（含时区）");
-  if (at.getTime() <= Date.now()) throw new Error("提醒时间已经过了");
-  const item = ctx.store.addReminder({ chatId: String(ctx.chatId), senderId: String(ctx.senderId), text: String(args.text || "（无内容）"), at: at.toISOString() });
+  // 相对时间优先走 in_seconds（代码算绝对时刻）；让模型自己换算 ISO 时间+时区
+  // 极易出错（2026-11-22 实测把东京时间说成北京时间、且没调工具就编造已设好）。
+  let at = null;
+  const secs = Number(args && args.in_seconds);
+  if (Number.isFinite(secs) && secs > 0) {
+    at = new Date(Date.now() + Math.min(secs, 7 * 24 * 3600) * 1000);
+  } else {
+    at = new Date(args && args.at);
+    if (Number.isNaN(at.getTime())) throw new Error("提醒时间格式不对：相对时间填 in_seconds（秒数），绝对时间填 ISO 时间（含时区）");
+    if (at.getTime() <= Date.now()) throw new Error("提醒时间已经过了");
+  }
+  const item = ctx.store.addReminder({ chatId: String(ctx.chatId), senderId: String(ctx.senderId), senderName: String(ctx.senderName || ""), text: String(args.text || "（无内容）"), at: at.toISOString() });
   const shown = new Intl.DateTimeFormat("zh-CN", { timeZone: ctx.timezone || "Asia/Shanghai", dateStyle: "medium", timeStyle: "short" }).format(at);
-  return `提醒已设：${shown} 提醒「${item.text}」。到点我会在这个会话里发消息。`;
+  return `提醒已设：${shown} 提醒「${item.text}」。到点我会在这个会话里 @ 你发提醒。`;
 }
 
 export function listRemindersTool(ctx) {
@@ -1018,7 +1026,7 @@ export const TOOL_DEFS = [
 { name: "make_qrcode", description: "把文字或链接生成二维码图片，图片会随回复发出。", parameters: S({ text: STR}, ["text"]), run: (a, ctx) => qrcodeTool(a.text, ctx)},
 { name: "find_photo", description: "用户想看某个人物、角色、东西或地方的照片/图片时用（如「看看X的照片」「发张X的图」「X长什么样」「来张X的壁纸」）：按关键词全网搜图，把找到的图随回复发出去。query 填要搜的对象名，可带限定词（如「时崎狂三 立绘」）。", parameters: S({ query: STR }, ["query"]), run: (a, ctx) => findPhotoTool(a.query, ctx)},
 { name: "world_time", description: "查某个城市/时区的当前时间。place 给城市中文名（如 东京、纽约）或 IANA 时区；不给就是机器人时区的当前时间。", parameters: S({ place: STR}), run: (a, ctx) => worldTimeTool(a.place, ctx && ctx.timezone)},
-{ name: "set_reminder", description: "设定时提醒：到点时机器人会在当前会话发一条提醒消息。at 是 ISO 时间字符串（带时区，如 2026-11-22T09:00:00+09:00），按用户话里的相对时间换算成绝对时间再填。", parameters: S({ text: STR, at: STR}, ["text", "at"]), run: (a, ctx) => addReminderTool(a, ctx)},
+{ name: "set_reminder", description: "设定时提醒：到点时机器人会在当前会话 @ 设定者发提醒。用户说相对时间（X 秒/分钟/小时后）时优先填 in_seconds（秒数，如 1 分钟后填 60），不要自己换算时区；用户给了绝对日期时间时才填 at（ISO 字符串带时区，如 2026-11-22T09:00:00+09:00）。text 填提醒内容。", parameters: S({ text: STR, at: STR, in_seconds: NUM }, ["text"]), run: (a, ctx) => addReminderTool(a, ctx)},
 { name: "list_reminders", description: "查看当前会话还没触发的提醒列表。", parameters: S({}), run: (a, ctx) => listRemindersTool(ctx)},
 { name: "todo", description: "待办清单（按会话+用户保存）。action 取 add（加一条，给 text）、list（查看）、done（完成一条，给 index 序号）、clear（清空）。", parameters: S({ action: STR, text: STR, index: NUM}, ["action"]), run: (a, ctx) => todoTool(a.action, a.text, a.index, ctx)},
 { name: "base64", description: "Base64 编码或解码。mode 取 encode 或 decode。", parameters: S({ text: STR, mode: STR}, ["text", "mode"]), run: (a) => base64Tool(a.text, a.mode)},
@@ -1075,7 +1083,7 @@ const GATE_WORDS = [
 "豆瓣", "维基", "百科", "wikidata", "duckduckgo", "归属", "ip地址", "一言", "古诗", "诗词", "图书",
 "找书", "二维码", "短网址", "短链接", "还原", "base64", "摩斯", "哈希", "md5", "sha1", "sha256", "uuid",
 "json", "进制", "单位", "多少天", "日期差", "随机数", "随机", "抽一个", "生成密码", "密码生成", "密码", "字数", "颜色",
-"抽签", "求签", "骰子", "硬币", "塔罗", "星座", "运势", "黄历", "农历", "提醒我", "提醒一下", "待办",
+"抽签", "求签", "骰子", "硬币", "塔罗", "星座", "运势", "黄历", "农历", "提醒我", "提醒一下", "提醒", "艾特", "分钟后", "小时后", "待办",
 "github", "仓库", "时区", "几点", "现在时间", "电影", "上映", "汇率换算", "升国旗",
 "照片", "图片", "壁纸", "长什么样", "发张", "来张", "看看图", "看图",
 ];
@@ -1127,4 +1135,4 @@ export function stripTextToolCalls(text) {
 /** 注入系统提示的工具说明（放在发言者断言之前，不抢占末尾断言的位置）。 */
 export const TOOLS_PROMPT_NOTE =
 "你有一组内置工具可以调用（查天气、翻译、热搜热榜、汇率、币价、金价、油价、票房、豆瓣电影、百科、IP 归属、一言、诗词、图书、二维码、短网址还原、编解码、哈希、进制/单位换算、日期计算、随机数、密码生成、字数统计、颜色换算、抽签、掷骰子、抛硬币、塔罗、星座运势、黄历、世界时间、设定时提醒、待办清单、GitHub 仓库搜索、搜图发图）。用户想看某个人物/东西的照片或图片时，调用搜图发图工具把图发出去，不要只回文字描述。" +
-"用户的问题需要实时数据、精确计算或这些功能时，先调用工具拿到结果再回答，不许凭记忆编造实时数据（天气、价格、热榜、票房尤其不许编）。工具返回失败或不可用时，如实告诉用户暂时查不到，不要用假数据糊弄。工具只能通过系统提供的调用机制使用，绝不要在回复正文里写 <tool_call> 标记或工具调用的 JSON。";
+"用户的问题需要实时数据、精确计算或这些功能时，先调用工具拿到结果再回答，不许凭记忆编造实时数据（天气、价格、热榜、票房尤其不许编）。工具返回失败或不可用时，如实告诉用户暂时查不到，不要用假数据糊弄。设提醒、记待办这类会落盘的功能，必须真的调用工具才算数：没调用工具、或工具没返回成功，绝不许声称已经设好、记好或存好。工具只能通过系统提供的调用机制使用，绝不要在回复正文里写 <tool_call> 标记或工具调用的 JSON。";
