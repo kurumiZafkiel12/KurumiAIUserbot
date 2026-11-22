@@ -46,6 +46,7 @@
 - [第 6 步：启动并测试](#第-6-步启动并测试)
 - [第 7 步：让它 24 小时在线（systemd）](#第-7-步让它-24-小时在线systemd)
 - [升级到新版](#升级到新版)
+- [在一台机器上跑第二个实例](#在一台机器上跑第二个实例)
 - [使用方法](#使用方法)
 - [配置多模型（config.json）](#配置多模型configjson)
 - [费用大概多少](#费用大概多少)
@@ -288,6 +289,31 @@ sudo systemctl status kurumiaiuserbot   # 8. 验收：active (running)，再看 
 ```
 
 第 3 步说明：`git pull` 若报 `Your local changes to package-lock.json would be overwritten`，是当初 `npm install` 在本地重写过锁文件，不是你的配置出问题——先 `git stash` 再 pull 就能过。stash 起来的是旧锁文件改动，不要再 `git stash pop` 拿回来。
+
+## 在一台机器上跑第二个实例
+
+一台 VPS 可以同时跑多个机器人实例：一个实例 = 一个目录 + 一个 Telegram 账号 + 一个 systemd 服务，互不干扰。想再挂一个号，不用再买一台机器：
+
+1. **新目录重新克隆一份代码，不要复制旧实例的目录**：
+
+```bash
+git clone https://github.com/kurumiZafkiel12/KurumiAIUserbot.git /opt/kurumiaiuserbot2
+cd /opt/kurumiaiuserbot2
+npm install --omit=dev
+```
+
+> ⚠️ 千万别 `cp -r` 旧目录图省事：旧号的登录会话（.ai-session）、记事本、人设都会被一起带过去，两个实例登同一个号会互相顶掉、重复回消息。
+
+2. 在新目录里建第二份 .env（`cp -n .env.example .env`，只跑一次），填**第二个号**的 `MY_USERNAME`、`OWNER_ID` 和接口 key；模型名可留空，启动时自动识别。接口 key 可以和第一个实例共用同一个。
+3. 在新目录里跑 `npm run login`，用第二个号的手机号登录（会话文件只存在新目录里）。
+4. 把第 7 步的 systemd unit 再建一份，改三处：服务名（如 `kurumiaiuserbot2`）、`WorkingDirectory`、`ExecStart` 的路径都指向新目录，然后 `sudo systemctl daemon-reload && sudo systemctl enable --now kurumiaiuserbot2`。
+5. 验收：用第二个号的号主账号私聊新机器人发 `/ai 状态`，回一整段状态即成功。
+
+注意：
+
+- 每个实例必须登**不同的 Telegram 账号**，这是唯一的硬性要求；其余（记事本、档案、配置）都按目录隔离，不会串。
+- 资源占用：一个实例约一两百 MB 内存，小机器跑两三个没问题，再多先看内存。
+- 升级时每个目录各 `git pull` 一次、各重启一次自己的服务（见「升级到新版」）。
 
 ## 使用方法
 
