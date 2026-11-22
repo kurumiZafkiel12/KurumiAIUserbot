@@ -184,3 +184,14 @@ test("v0.9.2 私聊门禁默认值与生产对齐：不写 privateChat 时为 ad
   writeJson({ privateChat: "admins" });
   assert.equal(loadConfig().privateChat, "admins");
 });
+
+test("群记录默认全开（v0.9.18）：recordAllGroups 缺省 true、显式 false 才关；静默名单解析", () => {
+  writeJson({});
+  const on = loadConfig();
+  assert.equal(on.recordAllGroups, true);
+  assert.deepEqual(on.recordMutedGroups, []);
+  writeJson({ recordAllGroups: false, recordMutedGroups: ["-1001", -1002] });
+  const off = loadConfig();
+  assert.equal(off.recordAllGroups, false);
+  assert.deepEqual(off.recordMutedGroups, ["-1001", "-1002"]);
+});

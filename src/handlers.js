@@ -498,9 +498,18 @@ if (!rendered) return "";
 return `系统备注：这些是你记住的、本会话的事（只属于当前会话，别的会话不要提）。被问到时用你自己的话自然地讲出来，就像你本来就记得一样：不要照抄下面的条目原文，不要动不动说「谁说的」，只有被追问来源时才提一句出处。\n${rendered}`;
 }
 
-/** 群聊天记录段：本群开启了记录时，把最近 N 条记录拼进来，让模型知道大家在聊什么。 */
+/** 本群是否在记录：默认全群记录（recordAllGroups 缺省开），静默名单里的群不记；
+ * recordAllGroups 被关掉时退回旧白名单（recordGroups）模式。 */
+function recordsEnabledFor(chatId) {
+const id = String(chatId);
+if ((config.recordMutedGroups || []).includes(id)) return false;
+if (config.recordAllGroups !== false) return true;
+return (config.recordGroups || []).includes(id);
+}
+
+/** 群聊天记录段：本群在记录时，把最近 N 条记录拼进来，让模型知道大家在聊什么。 */
 function recordsSegment(chatId) {
-if (!(config.recordGroups || []).includes(String(chatId))) return "";
+if (!recordsEnabledFor(chatId)) return "";
 const limit = (config.recordContextLimit || {})[chatId] || 100;
 const rendered = renderRecords(records.recent(chatId, limit));
 if (!rendered) return "";
@@ -544,7 +553,7 @@ if (vp) parts.push(vp);
 parts.push(formatNowLine(config.timezone));
 // 链接格式段：Telegram 会把无空格连写的「名称（域名）—」整串误标成一个网址（混着中文与
 // 全角括号、点开报无法打开），故要求模型写网址用完整链接并留空格（v0.9.10 群内实测教训）。
-parts.push("【链接格式】在回复里写网址时，用完整链接（带 https://）并与前后文字留空格，例如「AI星踪岛 https://aixzd.com/rank 」；不要写成「名称（域名）」这种把域名用括号贴在名称后面的格式，会被 Telegram 误认成打不开的链接。");
+parts.push("【链接格式】先会分辨该不该带链接：闲聊、解释、讲怎么用这类回答，用自己的话讲完就行，不要贴参考链接、不要罗列出处；只有对方明确要链接，或答案离了链接没法用（下载地址、原文页）时才给，最多一个。真要写网址时，用完整链接（带 https://）并与前后文字留空格，例如「AI星踪岛 https://aixzd.com/rank 」；不要写成「名称（域名）」这种把域名用括号贴在名称后面的格式，会被 Telegram 误认成打不开的链接。");
 // 工具说明：告诉模型有哪些内置工具、实时数据必须先调工具（身份断言仍保持最末尾）。
 parts.push(TOOLS_PROMPT_NOTE);
 // 身份断言永远在最末尾（破甲之后）：只给核验结论，不给任何数字 ID。
@@ -989,7 +998,7 @@ return out;
         `识图池：${flattenVisionPool(config.visionPool).length} 条`,
         `TTS：${config.ttsApiBase && config.ttsApiKey ? "已配置" : "未配置"} / 音色：${Object.keys(config.voiceBook || {}).length} 个`,
         `搜索：${config.searchProvider === "lightpanda" ? "Lightpanda（本机搜索，免 key）" : config.searchApiKey ? "接口（key 已配置）" : "未配置"}`,
-        `记录开启的群：${(config.recordGroups || []).length} 个`,
+        `群记录：${config.recordAllGroups !== false ? `全群开启（已静默 ${(config.recordMutedGroups || []).length} 个群）` : `白名单 ${(config.recordGroups || []).length} 个群`}`,
         `破甲：${(config.poJia || "").trim() ? "已设置" : "未设置"}`,
       ];
       const disabledCount = pool.entries.filter((e) => e.disabled).length;
@@ -1437,31 +1446,34 @@ return out;
 
     // ---- 群聊天记录 ----
     if (cmd === "开启记录" || cmd === "开启上下文") {
+      if (recordsEnabledFor(chatId)) return reply(msg, "本群已经在记录了。发 /ai 查看记录 看最近记录。");
       const groups = [...(config.recordGroups || [])];
-      if (groups.includes(chatId)) return reply(msg, "本群已经在记录了。发 /ai 查看记录 看最近记录。");
-      groups.push(chatId);
-      if (!saveAndReload({ recordGroups: groups })) return reply(msg, "保存失败，请看日志。");
+      if (!groups.includes(chatId)) groups.push(chatId);
+      const muted = (config.recordMutedGroups || []).filter((g) => g !== chatId);
+      if (!saveAndReload({ recordGroups: groups, recordMutedGroups: muted })) return reply(msg, "保存失败，请看日志。");
       return reply(msg, "已开启本群聊天记录：本群消息会被记录，回答问题时会带上最近的记录作上下文。");
     }
 
     if (cmd === "关闭记录" || cmd === "关闭上下文") {
+      if (!recordsEnabledFor(chatId)) return reply(msg, "本群已经不在记录了。");
       const groups = (config.recordGroups || []).filter((g) => g !== chatId);
-      if (groups.length === (config.recordGroups || []).length) return reply(msg, "本群本来就没有开启记录。");
-      if (!saveAndReload({ recordGroups: groups })) return reply(msg, "保存失败，请看日志。");
-      return reply(msg, "已关闭本群聊天记录（已记录的内容保留，发 /ai 查看记录 还能看）。");
+      const muted = [...(config.recordMutedGroups || [])];
+      if (!muted.includes(chatId)) muted.push(chatId);
+      if (!saveAndReload({ recordGroups: groups, recordMutedGroups: muted })) return reply(msg, "保存失败，请看日志。");
+      return reply(msg, "已关闭本群聊天记录（已记录的内容保留，发 /ai 查看记录 还能看；发 /ai 开启记录 可恢复）。");
     }
 
     if (cmd === "查看记录") {
       if (!isPrivateChat) {
-        if (!(config.recordGroups || []).includes(chatId)) {
-          return reply(msg, "本群还没开启记录，先发 /ai 开启记录。");
+        if (!recordsEnabledFor(chatId)) {
+          return reply(msg, "本群已关闭记录（发 /ai 开启记录 可恢复）。");
         }
         const items = records.recent(chatId, 10);
         if (items.length === 0) return reply(msg, "本群暂时还没有记录到消息。");
         return reply(msg, `本群最近 ${items.length} 条记录：\n${renderRecords(items)}`);
       }
-      const groups = config.recordGroups || [];
-      if (groups.length === 0) return reply(msg, "当前没有开启记录的群。");
+      const groups = [...new Set([...(config.recordGroups || []), ...records.chats()])].filter((g) => recordsEnabledFor(g));
+      if (groups.length === 0) return reply(msg, "当前没有正在记录的群。");
       const lines = groups.map((g, i) => {
         const lim = (config.recordContextLimit || {})[g] || 100;
         return `${i + 1}. 群 ${g}（上下文取最近 ${lim} 条，已记录 ${records.count(g)} 条）`;
@@ -2448,7 +2460,7 @@ return out;
 
       // 群聊天记录：开启记录的群里，所有人的文本消息都记下来（号主命令已在上面处理完，
       // 不会记进行录；机器人的回复是 out 消息、更早就返回了，也不会记）。
-      if (!isPrivateChat && text && (config.recordGroups || []).includes(chatId)) {
+      if (!isPrivateChat && text && recordsEnabledFor(chatId)) {
         const name = await getSpeakerName();
         records.record(chatId, { name: name || "群友", senderId, text });
       }

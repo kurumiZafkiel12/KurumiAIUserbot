@@ -77,6 +77,8 @@ test("formatSearchContext 把结果拼在问题前；maskSearchKey 只露尾 4 �
 const out = formatSearchContext("serper", "结果文本", "原问题");
 assert.ok(out.startsWith("【搜索结果】"));
 assert.ok(out.endsWith("原问题"));
+assert.ok(out.includes("不是让你转发的"), "搜索说明须含链接克制（v0.9.18）");
+assert.ok(!out.includes("标注来源时写完整链接"), "旧的鼓励标注来源措辞须已删除");
 assert.equal(maskSearchKey("abcdefgh1234"), "****1234");
 assert.equal(maskSearchKey(""), "");
 });

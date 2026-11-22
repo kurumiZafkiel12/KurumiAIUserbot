@@ -46,3 +46,10 @@ test("落盘后能读回；文件损坏按空启动不抛错", () => {
   const r3 = new GroupRecords(file);
   assert.equal(r3.count("g"), 0);
 });
+
+test("GroupRecords.chats()：列出有记录的群（v0.9.18 全群记录的状态页要用）", () => {
+const r = new GroupRecords(null);
+r.record("-1001", { name: "甲", senderId: "1", text: "你好" });
+r.record("-1002", { name: "乙", senderId: "2", text: "在吗" });
+assert.deepEqual(r.chats().sort(), ["-1001", "-1002"]);
+});

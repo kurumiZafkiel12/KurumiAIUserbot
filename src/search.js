@@ -392,7 +392,7 @@ return { text: text.trim(), urls: picked.map((r) => r.url) };
 /** 把搜索结果拼进问题文本（模型看到的是带出处材料的问题）。 */
 export function formatSearchContext(mode, resultText, question) {
 const label = mode === "tavily"? "联网搜索结果": "搜索结果";
-return `【${label}】\n${resultText}\n\n【说明】优先依据上面资料回答，资料没覆盖的不要编；标注来源时写完整链接（带 https://）并与前后文字留空格，不要把域名用括号贴在名称后面。\n\n【用户的问题】\n${question}`;
+return `【${label}】\n${resultText}\n\n【说明】优先依据上面资料、用自己的话回答，资料没覆盖的不要编。资料里的链接只是给你核对内容用的，不是让你转发的：不要在回复里罗列来源链接，也不要每段后面挂一个链接。只有用户明确要链接或出处、或答案离了链接没法用（下载地址、原文页）时才给，最多一个；要给就写完整链接（带 https://）并与前后文字留空格，不要把域名用括号贴在名称后面。\n\n【用户的问题】\n${question}`;
 }
 
 /** 搜索 key 打码展示：只露最后 4 位；没配返回空串（调用方据此提示未配置）。 */
