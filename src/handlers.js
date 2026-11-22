@@ -521,6 +521,9 @@ const vp = voicePersonaSegment(chatId, senderId);
 if (vp) parts.push(vp);
 // 当前时间段：不给的话模型对「现在几点了」只能瞎编或说不知道。
 parts.push(formatNowLine(config.timezone));
+// 链接格式段：Telegram 会把无空格连写的「名称（域名）—」整串误标成一个网址（混着中文与
+// 全角括号、点开报无法打开），故要求模型写网址用完整链接并留空格（v0.9.10 群内实测教训）。
+parts.push("【链接格式】在回复里写网址时，用完整链接（带 https://）并与前后文字留空格，例如「AI星踪岛 https://aixzd.com/rank 」；不要写成「名称（域名）」这种把域名用括号贴在名称后面的格式，会被 Telegram 误认成打不开的链接。");
 // 工具说明：告诉模型有哪些内置工具、实时数据必须先调工具（身份断言仍保持最末尾）。
 parts.push(TOOLS_PROMPT_NOTE);
 // 身份断言永远在最末尾（破甲之后）：只给核验结论，不给任何数字 ID。
