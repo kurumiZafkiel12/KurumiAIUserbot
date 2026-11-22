@@ -1,5 +1,9 @@
 # 更新日志
 
+## v0.9.19（2026-11-22）
+
+- 【提醒真 @ 终于修对：提及实体用错了类】v0.9.18 上线后群内复测仍没 @ 到人。查生产日志实锤：到点发送时抛 CastError「userId expected bigInt but received Object」——本 GramJS 版本的 MessageEntityMentionName 的 user_id 是 long 型（TL 定义 messageEntityMentionName#dc7b1140 user_id:long），v0.9.16 起调度器却往里塞 InputUser，序列化直接抛错、退回纯文本；而 v0.9.17 的日志把这个序列化失败误报成「实体解析失败」，探针又只验了解析、没验发送构造，所以连着两版没发现。探针回读实证：裸 long 版实体会被服务器丢弃，只有 InputMessageEntityMentionName（user_id:InputUser）回读到真提及实体。改：调度器改用 InputMessageEntityMentionName；日志区分「解析失败」与「带实体发送失败」两种原因；加回归测试钉住两个类的序列化行为
+
 ## v0.9.18（2026-11-22）
 
 - 【修短回复被搜索劫持：Pawn 答「抽」被当成查字典】群内实录：机器人问「要我给你抽几张玩吗」，Pawn 回「抽」，机器人却搜了「抽」字、搬回百度百科/辞典释义。根因有二：① Lightpanda 线对任何非本地问题都搜，「抽」清洗后非空就触发搜索，字典结果把塔罗上文整个盖掉；② 「抽」本身不在工具门关键词里，塔罗工具管线根本没启动。改：① planSearch 加续聊抑制——有会话历史且问题 ≤4 字时不搜（显式「联网搜索」仍放行、无历史的首条短消息照常搜）；② 工具门加续聊提升——短消息本身不过门时，看近 4 条上文有没有工具话题（塔罗/骰子等），有就走工具管线，让模型接上文真抽牌

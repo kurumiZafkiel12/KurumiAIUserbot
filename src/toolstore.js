@@ -106,7 +106,8 @@ export function reminderMentionLabel(r) {
 
 /** 到点提醒的纯文本。提及不靠 markdown：GramJS 的 markdown 解析器只认 ** 等
  * 定界符、不认 [文字](链接) 语法——v0.9.15 写的 tg:// 链接被原样发了出去（群内实测）。
- * 真提及由调度器另附 MessageEntityMentionName 实体（v0.9.16 修）。 */
+ * 真提及由调度器另附 InputMessageEntityMentionName 实体（v0.9.19 定版：非 Input 版
+ * 的 user_id 是 long 型、塞 InputUser 序列化直接抛错，见调度器处注释）。 */
 export function reminderFireText(r) {
   return `${reminderMentionLabel(r)} 提醒：${r.text}`;
 }
@@ -160,30 +161,38 @@ export function startReminderScheduler(client, store, logger) {
     for (const r of due) {
       const text = reminderFireText(r);
       try {
-        // 真 @：附 MessageEntityMentionName 实体（offset/length 按 UTF-16 计数，
+        // 真 @：附 InputMessageEntityMentionName 实体（offset/length 按 UTF-16 计数，
         // JS 字符串 length 即 UTF-16 单元数）；用户实体三级解析见 resolveReminderInputUser。
+        // 必须用 Input 版：本 GramJS 版本的 MessageEntityMentionName 的 user_id 是 long 型，
+        // 塞 InputUser 会在序列化时抛 CastError、塞裸 ID 又会被服务器丢弃实体——v0.9.16/17
+        // 两版都栽在这里（2026-11-22 探针回读实证：Input 版回读到 MessageEntityMentionName）。
         let entities;
+        let failReason = "";
         const inputUser = await resolveReminderInputUser(client, r).catch(() => null);
         if (inputUser) {
           entities = [
-            new Api.MessageEntityMentionName({
+            new Api.InputMessageEntityMentionName({
               offset: 0,
               length: reminderMentionLabel(r).length,
               userId: inputUser,
             }),
           ];
+        } else {
+          failReason = "未带上 @：设定者实体解析失败";
         }
         try {
           await client.sendMessage(r.chatId, { message: text, formattingEntities: entities });
         } catch (err) {
           if (!entities) throw err;
           // 带实体发送失败（多半是 accessHash 失效）：退回纯文本，保证提醒本身送达。
+          failReason = `未带上 @：带实体发送失败（${err.message}）`;
           entities = undefined;
           await client.sendMessage(r.chatId, { message: text });
         }
-        // 是否带上 @ 必须进日志：v0.9.16 静默退回纯文本、日志还报成功，问题无从定位。
+        // 是否带上 @ 必须进日志、且区分失败原因：v0.9.16 静默退回纯文本、日志还报成功，
+        // v0.9.17 的日志又把序列化失败误报成解析失败，问题无从定位。
         if (entities) logger.info(`已发送提醒（带 @）（chat=${r.chatId}）：${r.text}`);
-        else logger.info(`已发送提醒（未带上 @：设定者实体解析失败）（chat=${r.chatId}）：${r.text}`);
+        else logger.info(`已发送提醒（${failReason}）（chat=${r.chatId}）：${r.text}`);
       } catch (err) {
         logger.error(`发送提醒失败（chat=${r.chatId}）：${err.message}`);
       }

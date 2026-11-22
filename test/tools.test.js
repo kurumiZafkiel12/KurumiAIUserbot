@@ -15,6 +15,7 @@ import {
   directToolCommand,
 } from "../src/tools.js";
 import { ToolStore, reminderFireText, resolveReminderInputUser } from "../src/toolstore.js";
+import { Api } from "telegram";
 import { chatWithTools } from "../src/toolchat.js";
 
 test("base64 编解码往返", () => {
@@ -385,4 +386,12 @@ assert.equal(directToolCommand("塔罗牌怎么玩"), null);
 assert.equal(directToolCommand("我想掷骰子"), null);
 assert.equal(directToolCommand("抽"), null);
 assert.match(tarotTool(1), /^1\. \S+（(正位|逆位)）：/);
+});
+
+test("提及实体构造（v0.9.19 回归）：Input 版塞 InputUser 可序列化，非 Input 版抛 CastError", () => {
+const inputUser = new Api.InputUser({ userId: BigInt(8842059740), accessHash: BigInt(12345) });
+const ent = new Api.InputMessageEntityMentionName({ offset: 0, length: 3, userId: inputUser });
+assert.doesNotThrow(() => ent.getBytes());
+const bad = new Api.MessageEntityMentionName({ offset: 0, length: 3, userId: inputUser });
+assert.throws(() => bad.getBytes());
 });
