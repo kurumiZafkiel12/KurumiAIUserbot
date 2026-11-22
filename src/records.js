@@ -88,6 +88,11 @@ export class GroupRecords {
     return list.slice(-count);
   }
 
+  /** 有记录的群 ID 列表。 */
+  chats() {
+    return [...this.groups.keys()];
+  }
+
   /** 某群已记录的条数。 */
   count(chatId) {
     return (this.groups.get(String(chatId)) || []).length;
