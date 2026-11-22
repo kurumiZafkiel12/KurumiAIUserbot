@@ -4,6 +4,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
+import { Api } from "telegram";
 
 export class ToolStore {
   constructor(filePath) {
@@ -97,12 +98,16 @@ export class ToolStore {
   }
 }
 
-/** 到点提醒的文案：带上设定者的文字提及（tg://user 链接），对方才会收到 @ 提醒；
- * 只发一条干巴巴的「提醒：…」到群里，设定者多半看不见（v0.9.15 修）。 */
+/** 到点提醒里设定者的称呼（清洗掉会破坏实体/排版的字符）。 */
+export function reminderMentionLabel(r) {
+  return String(r.senderName || "").replace(/[\[\]()]/g, "").trim() || "你";
+}
+
+/** 到点提醒的纯文本。提及不靠 markdown：GramJS 的 markdown 解析器只认 ** 等
+ * 定界符、不认 [文字](链接) 语法——v0.9.15 写的 tg:// 链接被原样发了出去（群内实测）。
+ * 真提及由调度器另附 MessageEntityMentionName 实体（v0.9.16 修）。 */
 export function reminderFireText(r) {
-  const label = String(r.senderName || "").replace(/[\[\]()]/g, "").trim() || "你";
-  const mention = r.senderId ? `[${label}](tg://user?id=${r.senderId}) ` : "";
-  return `${mention}提醒：${r.text}`;
+  return `${reminderMentionLabel(r)} 提醒：${r.text}`;
 }
 
 /**
@@ -116,8 +121,34 @@ export function startReminderScheduler(client, store, logger) {
     if (stopped) return;
     const due = store.takeDueReminders(new Date());
     for (const r of due) {
+      const text = reminderFireText(r);
       try {
-        await client.sendMessage(r.chatId, { message: reminderFireText(r) });
+        // 真 @：附 MessageEntityMentionName 实体（offset/length 按 UTF-16 计数，
+        // JS 字符串 length 即 UTF-16 单元数）；解析不到用户实体时退回纯文本。
+        let entities;
+        if (r.senderId) {
+          try {
+            const peer = await client.getInputEntity(r.senderId);
+            if (peer && peer.userId !== undefined) {
+              entities = [
+                new Api.MessageEntityMentionName({
+                  offset: 0,
+                  length: reminderMentionLabel(r).length,
+                  userId: new Api.InputUser({ userId: peer.userId, accessHash: peer.accessHash || BigInt(0) }),
+                }),
+              ];
+            }
+          } catch {
+            entities = undefined;
+          }
+        }
+        try {
+          await client.sendMessage(r.chatId, { message: text, formattingEntities: entities });
+        } catch (err) {
+          if (!entities) throw err;
+          // 带实体发送失败（多半是 accessHash 失效）：退回纯文本，保证提醒本身送达。
+          await client.sendMessage(r.chatId, { message: text });
+        }
         logger.info(`已发送提醒（chat=${r.chatId}）：${r.text}`);
       } catch (err) {
         logger.error(`发送提醒失败（chat=${r.chatId}）：${err.message}`);
