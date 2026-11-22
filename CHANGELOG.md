@@ -1,5 +1,10 @@
 # 更新日志
 
+## v0.9.17（2026-11-22）
+
+- 【修到点 @ 仍不出来：实体解析依赖冷缓存】群内复测 v0.9.16：到点消息无任何提及实体（回读线上消息 entities 为空实锤）。根因：GramJS 的实体缓存每连接一份、冷启动为空，调度器到点时 getInputEntity(设定者) 在缓存缺失时抛错被静默吞掉、退回纯文本，日志还报成功。改三级解析（resolveReminderInputUser）：① 设定提醒时就经工具 ctx 的 client 把设定者 accessHash 捕获落盘，到点直接构建 InputUser；② 实体缓存直查；③ 扫原会话近 50 条消息预热缓存再查。调度器日志从此区分「已发送提醒（带 @）」与「未带上 @：实体解析失败」，不再静默
+- 【修设定者名字取空】同一复测里到点文案称呼落成兜底的「你」：getSpeakerName 冷缓存取不到发送者、且只读 firstName。改：名字拼 firstName+lastName 再退 username；addReminderTool 在 ctx 名字为空时用 client.getEntity 补取一次，并一并落盘捕获到的 accessHash
+
 ## v0.9.16（2026-11-22）
 
 - 【修到点提醒的 @ 是假的：markdown 提及被原样发出】群内复测 v0.9.15：到点消息把 [你](tg://user?id=…) 原样显示、根本没 @ 到人。根因：GramJS 的 markdown 解析器只认 **/__ 等定界符，压根不解析 [文字](链接) 语法。改：调度器发送时附 MessageEntityMentionName 实体（经 getInputEntity 解析设定者、offset/length 按 UTF-16），带实体发送失败或解析不到用户时退回纯文本保证送达；文案回归纯文本「名字 提醒：…」
