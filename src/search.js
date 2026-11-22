@@ -71,6 +71,17 @@ changed = true;
 return q;
 }
 
+/** AI 改写出的查询词验收：只取第一行、剥围引号、长度 2–80，不合规就用兜底查询。 */
+export function sanitizeRewrittenQuery(out, fallback) {
+const q = String(out || "")
+.split("\n")[0]
+.trim()
+.replace(/^[""「『【]/, "")
+.replace(/[""」』】]$/, "")
+.trim();
+return q.length >= 2 && q.length <= 80 ? q : fallback;
+}
+
 export function planSearch(question, options = {}) {
 const viaLightpanda = options.provider === "lightpanda";
 if (!viaLightpanda && !options.hasKey) return null;
