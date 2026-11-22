@@ -1,5 +1,9 @@
 # 更新日志
 
+## v0.9.13（2026-11-22）
+
+- 【Lightpanda 引擎链换首选：Yahoo → Brave → Bing】2026-11-22 晚在生产机逐个实测候选引擎（同一问题 kazumi）：Yandex 弹验证码、Startpage 被墙、Google/Qwant 抓不到结果、搜狗/360 能出结果但索引偏国内；Yahoo（Bing 索引）不设墙且质量最好——kazumi 首条即官网（Flutter 跨平台番剧采集应用）、「Spx收盘价是多少」给英为财情/富途/东方财富等对题财经源，正是 Bing 本家在同 IP 下时灵时不灵的那批结果。新增 buildYahooSearchUrl / parseYahooMarkdown（裸链接行锚点 + ### 标题 + 摘要，按域名过滤 Yahoo Scout 的 AI 区块）；Brave 降为第二顺位（其 PoW 验证解除后仍可自动接回），Bing 继续兜底
+
 ## v0.9.12（2026-11-22）
 
 - 【搜索结果加进程内缓存（15 分钟）】背景：Brave 对机房 IP 的高频抓取会弹 PoW 人机验证（2026-11-22 晚实测已被弹，验证页解析不出结果后只能落 Bing，而 Bing 从机房 IP 的结果质量是抽奖——同问 kazumi 时而首条官网、时而全是 OBS/微软页）；Mojeek/DDG/Ecosia 同 IP 均被机器人墙。缓解：Lightpanda 线的搜索结果按「后端+清洗后查询词」缓存 15 分钟，群里重复问题直接用缓存、不再重复抓取，降低触发验证的频率，重复问答也更快。缓存只存成功结果，上限 100 条超限清空
