@@ -4,6 +4,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { execFile } from "node:child_process";
 import { Api} from "telegram";
 import {
 parseTrigger,
@@ -43,6 +44,8 @@ buildSerperRequest,
 parseSerperResults,
 buildTavilyRequest,
 parseTavilyResults,
+buildBingSearchUrl,
+parseBingMarkdown,
 formatSearchContext,
 maskSearchKey,
 } from "./search.js";
@@ -262,6 +265,22 @@ const usageStats = deps.usageStats || new UsageStats(null);
 const records = deps.records || new GroupRecords(null);
 const toolStore = deps.toolStore || new ToolStore(null);
 const fetchImpl = deps.fetchImpl || ((...args) => globalThis.fetch(...args));
+// Lightpanda 搜索执行器（可注入点，测试可换假实现）：拉起本机 Lightpanda 抓 Bing 结果页 Markdown。
+const lightpandaFetch =
+deps.lightpandaFetch ||
+((bin, query) =>
+new Promise((resolve, reject) => {
+execFile(
+bin || "/opt/lightpanda/lightpanda",
+["fetch", "--dump", "markdown", buildBingSearchUrl(query)],
+{
+timeout: 30000,
+maxBuffer: 4 * 1024 * 1024,
+env: { ...process.env, LIGHTPANDA_DISABLE_TELEMETRY: "true" },
+},
+(err, stdout) => (err ? reject(err) : resolve(String(stdout || ""))),
+);
+}));
 const sleepFn = deps.sleep || ((ms) => new Promise((r) => setTimeout(r, ms)));
 const updateProfile =
 deps.updateProfile ||
@@ -923,7 +942,7 @@ return out;
         `默认提供方：${config.defaultProvider || "default"}`,
         `识图池：${flattenVisionPool(config.visionPool).length} 条`,
         `TTS：${config.ttsApiBase && config.ttsApiKey ? "已配置" : "未配置"} / 音色：${Object.keys(config.voiceBook || {}).length} 个`,
-        `搜索 key：${config.searchApiKey ? "已配置" : "未配置"}`,
+        `搜索：${config.searchProvider === "lightpanda" ? "Lightpanda（本机抓 Bing，免 key）" : config.searchApiKey ? "接口（key 已配置）" : "未配置"}`,
         `记录开启的群：${(config.recordGroups || []).length} 个`,
         `破甲：${(config.poJia || "").trim() ? "已设置" : "未设置"}`,
       ];
@@ -1920,21 +1939,29 @@ return out;
       question = sayMatch[1].trim() || question;
     }
 
-    // 联网搜索：配了搜索 key 且问题适合搜时，先搜再把结果拼进问题让模型作答。
-    const plan = planSearch(question, { hasKey: Boolean(config.searchApiKey), hasPhoto: false });
+    // 联网搜索：问题适合搜时先搜再把结果拼进问题让模型作答。
+    // 后端二选一：配了 key 走 Serper/Tavily 接口；searchProvider=lightpanda 走本机 Lightpanda 抓 Bing（免 key）。
+    const plan = planSearch(question, { hasKey: Boolean(config.searchApiKey), hasPhoto: false, provider: config.searchProvider });
     if (plan) {
       try {
-        const req =
-          plan.mode === "tavily"
-            ? buildTavilyRequest(config.searchApiBase2, config.searchApiKey, plan.query)
-            : buildSerperRequest(config.searchApiBase, config.searchApiKey, plan.query);
-        const res = await fetchImpl(req.url, req.options);
-        if (res && res.ok) {
-          const data = await res.json();
-          const result = plan.mode === "tavily" ? parseTavilyResults(data) : parseSerperResults(data);
+        if (plan.mode === "lightpanda") {
+          const md = await lightpandaFetch(config.lightpandaBin, plan.query);
+          const result = parseBingMarkdown(md);
           if (result.text) question = formatSearchContext(plan.mode, result.text, question);
+          else logger.error("搜索失败：Lightpanda 未解析出结果");
         } else {
-          logger.error(`搜索失败：HTTP ${res ? res.status : "无响应"}`);
+          const req =
+            plan.mode === "tavily"
+              ? buildTavilyRequest(config.searchApiBase2, config.searchApiKey, plan.query)
+              : buildSerperRequest(config.searchApiBase, config.searchApiKey, plan.query);
+          const res = await fetchImpl(req.url, req.options);
+          if (res && res.ok) {
+            const data = await res.json();
+            const result = plan.mode === "tavily" ? parseTavilyResults(data) : parseSerperResults(data);
+            if (result.text) question = formatSearchContext(plan.mode, result.text, question);
+          } else {
+            logger.error(`搜索失败：HTTP ${res ? res.status : "无响应"}`);
+          }
         }
       } catch (err) {
         logger.error(`搜索失败：${err.message}`);
