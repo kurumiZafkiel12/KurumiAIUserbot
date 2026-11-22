@@ -167,8 +167,9 @@ export function loadConfig() {
     // 访客名单：privateChat="admins" 时可私聊的普通用户（仅放行私聊，无管理员权限）。
     guestIds: normalizeGuestIds(json.guestIds),
     ignoreSenderIds: normalizeAdminIds(json.ignoreSenderIds),
-    // 私聊门禁："all"（默认）人人可私聊；"admins" 只有创建者+管理员+访客可私聊，群聊不受影响。
-    privateChat: json.privateChat === "admins" ? "admins" : "all",
+    // 私聊门禁：默认 "admins"（只有创建者+管理员+访客可私聊，与生产部署一致，
+    // 也与号主帮助里的说明一致）；明确写 "all" 才人人可私聊。群聊不受影响。
+    privateChat: json.privateChat === "all" ? "all" : "admins",
 
     // ---- v0.5.0 起的字段 ----
     // 用户名触发开关：false 时普通用户的 @用户名 提及不触发（回复/私聊不受影响）。
