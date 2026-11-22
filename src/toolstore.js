@@ -35,11 +35,12 @@ export class ToolStore {
     fs.renameSync(tmp, this.filePath);
   }
 
-  addReminder({ chatId, senderId, text, at }) {
+  addReminder({ chatId, senderId, senderName, text, at }) {
     const item = {
       id: `${Date.now()}-${Math.floor(Math.random() * 1e6)}`,
       chatId: String(chatId),
       senderId: String(senderId),
+      senderName: String(senderName || ""),
       text: String(text),
       at: String(at),
     };
@@ -96,6 +97,14 @@ export class ToolStore {
   }
 }
 
+/** 到点提醒的文案：带上设定者的文字提及（tg://user 链接），对方才会收到 @ 提醒；
+ * 只发一条干巴巴的「提醒：…」到群里，设定者多半看不见（v0.9.15 修）。 */
+export function reminderFireText(r) {
+  const label = String(r.senderName || "").replace(/[\[\]()]/g, "").trim() || "你";
+  const mention = r.senderId ? `[${label}](tg://user?id=${r.senderId}) ` : "";
+  return `${mention}提醒：${r.text}`;
+}
+
 /**
  * 提醒调度器：每 30 秒检查一次到点提醒，发到原会话。
  * 发送失败只记日志并放弃该条（不无限重试刷屏）。
@@ -108,7 +117,7 @@ export function startReminderScheduler(client, store, logger) {
     const due = store.takeDueReminders(new Date());
     for (const r of due) {
       try {
-        await client.sendMessage(r.chatId, { message: `提醒：${r.text}` });
+        await client.sendMessage(r.chatId, { message: reminderFireText(r) });
         logger.info(`已发送提醒（chat=${r.chatId}）：${r.text}`);
       } catch (err) {
         logger.error(`发送提醒失败（chat=${r.chatId}）：${err.message}`);
