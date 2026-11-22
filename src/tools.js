@@ -949,7 +949,7 @@ export function worldTimeTool(place, defaultTz) {
   }
 }
 
-export function addReminderTool(args, ctx) {
+export async function addReminderTool(args, ctx) {
   if (!ctx || !ctx.store) throw new Error("提醒功能未就绪");
   // 相对时间优先走 in_seconds（代码算绝对时刻）；让模型自己换算 ISO 时间+时区
   // 极易出错（2026-11-22 实测把东京时间说成北京时间、且没调工具就编造已设好）。
@@ -962,7 +962,28 @@ export function addReminderTool(args, ctx) {
     if (Number.isNaN(at.getTime())) throw new Error("提醒时间格式不对：相对时间填 in_seconds（秒数），绝对时间填 ISO 时间（含时区）");
     if (at.getTime() <= Date.now()) throw new Error("提醒时间已经过了");
   }
-  const item = ctx.store.addReminder({ chatId: String(ctx.chatId), senderId: String(ctx.senderId), senderName: String(ctx.senderName || ""), text: String(args.text || "（无内容）"), at: at.toISOString() });
+  // 设定时就把设定者的 accessHash 捕获落盘：到点时调度器的实体缓存未必有这个人
+  // （GramJS 缓存每连接一份、冷启动为空），靠它才能稳定构建出提及实体（v0.9.17）。
+  // 名字缺失时也顺手用实体补一次（getSpeakerName 冷缓存会取空）。
+  let senderName = String(ctx.senderName || "");
+  let senderAccessHash = "";
+  if (ctx.client && ctx.senderId) {
+    try {
+      const p = await ctx.client.getInputEntity(String(ctx.senderId));
+      if (p && p.accessHash) senderAccessHash = String(p.accessHash);
+    } catch {
+      // 拿不到不阻塞设定：到点时调度器还有扫会话预热的兜底。
+    }
+    if (!senderName) {
+      try {
+        const u = await ctx.client.getEntity(String(ctx.senderId));
+        if (u) senderName = String([u.firstName, u.lastName].filter(Boolean).join(" ") || u.username || "").trim();
+      } catch {
+        // 同上。
+      }
+    }
+  }
+  const item = ctx.store.addReminder({ chatId: String(ctx.chatId), senderId: String(ctx.senderId), senderName, senderAccessHash, text: String(args.text || "（无内容）"), at: at.toISOString() });
   const shown = new Intl.DateTimeFormat("zh-CN", { timeZone: ctx.timezone || "Asia/Shanghai", dateStyle: "medium", timeStyle: "short" }).format(at);
   return `提醒已设：${shown} 提醒「${item.text}」。到点我会在这个会话里 @ 你发提醒。`;
 }
