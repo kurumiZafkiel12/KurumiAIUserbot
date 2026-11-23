@@ -37,6 +37,7 @@ import { findKeyword, isSensitiveBlocked, unwrapArg} from "./moderation.js";
 import { formatServerInfo} from "./serverinfo.js";
 import { collectSecrets, scrubSecrets} from "./security.js";
 import { flattenVisionPool, pickVisionEntry, visionListText, looksVisionCapable } from "./vision.js";
+import { createApiClient as defaultCreateApiClient } from "./providers.js";
 import { GroupRecords, renderRecords} from "./records.js";
 import {
 planSearch,
@@ -120,6 +121,7 @@ export const OWNER_HELP_TEXT = `可用命令：
 /ai 启用api（再回 <序号>）
 /ai 加聊天api（发命令后按提示分步发名字、baseURL、key、模型名；也可一条发全四个参数）
 /ai 加生图api（分步添加同上；只用于生图，不参与聊天）
+/ai 加识图api（分步添加识图专用 API：名字、baseURL、key，再从它的模型列表里挑识图模型；不参与聊天）
 
 【识图】
 /ai 加识图（再回 <序号> 选 API，再回 <序号> 从它的模型列表里挑；选完自动拿测试图实测）
@@ -272,6 +274,8 @@ const usageStats = deps.usageStats || new UsageStats(null);
 const records = deps.records || new GroupRecords(null);
 const toolStore = deps.toolStore || new ToolStore(null);
 const fetchImpl = deps.fetchImpl || ((...args) => globalThis.fetch(...args));
+// 临时 API 客户端工厂（加识图api 查模型/实测用，可注入点，测试可换假实现）。
+const createApiClient = deps.createApiClient || defaultCreateApiClient;
 // Lightpanda 搜索执行器（可注入点，测试可换假实现）：拉起本机 Lightpanda 抓给定地址的结果页 Markdown。
 const lightpandaFetch =
 deps.lightpandaFetch ||
@@ -727,7 +731,7 @@ const status = e.disabled? "禁用": e.cooldownUntil > Date.now()? "冷却中": 
 // 类型标注（号主定版：标的是每个 API 干啥的——生图、聊天这种）：生图提供方只生图；
 // 其余是聊天，被识图池引用的同时兼识图。以前只有生图在状态里带个括号、聊天没标，
 // 一眼看不出谁是谁，现统一成独立的「类型：」段，人人有份。
-const kindText = e.image? "生图": visionNames.has(e.name)? "聊天、识图": "聊天";
+const kindText = e.image? "生图": e.vision? "识图": visionNames.has(e.name)? "聊天、识图": "聊天";
 return `${i + 1}. ${e.name} | 类型：${kindText} | 模型：${e.model} | 地址：${e.baseURL} | 状态：${status} | 今日：${limitText}`;
 })
 .join("\n");
@@ -748,15 +752,16 @@ return Boolean(pool.getByName(name)) || (config.customProviders || []).some((p) 
 }
 
 /** 保存一个新提供方（加聊天api/加生图api 的一步式与分步式共用）。 */
-function saveNewProvider({ name, baseURL, apiKeyValue, model, image }) {
+function saveNewProvider({ name, baseURL, apiKeyValue, model, image, vision }) {
 const entry = { name, baseURL, ["api" + "Key"]: apiKeyValue, model };
 if (image) entry.image = true;
+if (vision) entry.vision = true;
 return saveAndReload({ customProviders: [...(config.customProviders || []), entry] });
 }
 
 /** 加 API 分步流程里、等用户发第 step 段时的提示语（step：1 名字 2 baseURL 3 key 4 模型名）。 */
-function addApiPrompt(step, image, name) {
-const what = image? "生图 API": "聊天 API";
+function addApiPrompt(step, image, name, vision) {
+const what = image? "生图 API": vision? "识图 API": "聊天 API";
 if (step === 1) return `开始添加${what}，分四步。先发名字（60 秒内直接发，不要带空格）。`;
 if (step === 2) return `名字：${name}。接着发 baseURL（如 https://api.example.com/v1），60 秒内有效。`;
 if (step === 3) return "地址收到。接着发 key 全文，60 秒内有效。（只用于保存，不会回显）";
@@ -793,6 +798,81 @@ return image
 : `已添加提供方「${name}」（模型 ${model}），已生效。发 /ai 查看api 可确认。（key 不会回显）`;
 }
 
+/**
+ * 加识图api 的收尾（一步式与分步式共用）：先拿临时客户端实测，再把
+ * 识图专用提供方与识图池条目一次落盘，最后一条回复说清结果。
+ */
+async function finishVisionApiAdd(msg, { name, baseURL, apiKeyValue, model, client }) {
+const probe = await probeVisionModel(name, model, { client });
+if (providerNameTaken(name)) return reply(msg, `提供方名字「${name}」在添加途中被占用了，这次没加上。`);
+const vp = cloneVisionPool();
+const arr = vp[name] || (vp[name] = []);
+if (!arr.some((it) => it.model === model)) arr.push({ model, weight: 7 });
+const provider = { name, baseURL, ["api" + "Key"]: apiKeyValue, model, vision: true };
+if (!saveAndReload({ customProviders: [...(config.customProviders || []), provider], visionPool: vp })) {
+return reply(msg, "保存失败，请看日志。");
+}
+const head = `已添加识图 API「${name}」（模型 ${model}），已生效。它不进聊天池、只用来识图，发照片提问会自动用它。（key 不会回显）`;
+if (probe.ok) {
+return reply(msg, `${head}\n实测通过：拿一张红色测试图问它，它回了「${probe.answer}」，接口收图正常。`);
+}
+return reply(msg, `${head}\n但实测没通过：${probe.error}。现在发图大概率用不了，建议用 /ai 换模型 给它换个模型（会同步更新识图池），或删掉重加。`);
+}
+
+/**
+ * 加识图api 第四步的模型列表：拿刚收到的 baseURL+key 拉这个 API 的全部模型，
+ * 列出来回序号挑（识图模型打标记）；拉不到就退回「直接发模型名全文」。
+ */
+async function presentVisionModelList(msg, chatId, senderId, entry) {
+const keyProp = "api" + "Key";
+let ids = [];
+try {
+const client = createApiClient(entry.baseURL, entry[keyProp]);
+const list = await client.models.list();
+ids = ((list && list.data) || []).map((m) => m && m.id).filter(Boolean);
+} catch {
+ids = [];
+}
+if (ids.length === 0) {
+pending.set(chatId, senderId, { ...entry, step: 4, models: null });
+return reply(msg, `key 已收到。「${entry.name}」的模型列表没拉到（接口可能不支持查询），直接发识图模型名全文（60 秒内有效），发完会实测一次。`);
+}
+const shown = ids.slice(0, 50);
+pending.set(chatId, senderId, { ...entry, step: 4, models: shown });
+const lines = shown.map((id, i) => `${i + 1}. ${id}${looksVisionCapable(id) ? "（可识图）" : ""}`).join("\n");
+const more = ids.length > shown.length ? `\n（共 ${ids.length} 个，只列前 ${shown.length} 个；想用其它的直接发模型名全文也行）` : "\n（也可以直接发模型名全文）";
+const anyVision = shown.some((id) => looksVisionCapable(id));
+const tail = anyVision ? "\n（带「可识图」的是按名字猜的，选完会拿测试图实测一次）" : "\n提醒：这个 API 的模型里没一个像能识图的（多半不支持），选了也会在实测那步失败。";
+return reply(msg, `key 已收到。「${entry.name}」可用模型，给它挑哪个识图模型？回数字选（60 秒内有效）：\n${lines}${more}${tail}`);
+}
+
+/** 加识图api 命令入口：参数给全（4 段）就一步保存并实测；给不全按已给段数起分步 pending。 */
+async function startAddVisionApi(msg, chatId, senderId, rest) {
+const parts = rest.map((p) => unwrapArg(p.trim())).filter(Boolean);
+const keyProp = "api" + "Key";
+if (parts.length >= 4) {
+const [name, baseURL, apiKeyValue, model] = parts;
+if (providerNameTaken(name)) {
+return reply(msg, `提供方名字「${name}」已经有了，换个名字再加。`);
+}
+const client = createApiClient(baseURL, apiKeyValue);
+return finishVisionApiAdd(msg, { name, baseURL, apiKeyValue, model, client });
+}
+const entry = { kind: "加api", image: false, vision: true, step: parts.length + 1 };
+if (parts[0]) entry.name = parts[0];
+if (parts[1]) entry.baseURL = parts[1];
+if (parts[2]) entry[keyProp] = parts[2];
+if (entry.step === 2 && providerNameTaken(entry.name)) {
+return reply(msg, `提供方名字「${entry.name}」已经有了，换个名字再加。`);
+}
+if (entry.step === 4) {
+// 名字/baseURL/key 都在命令里给全了（只差模型）：直接拉列表让号主挑。
+return presentVisionModelList(msg, chatId, senderId, entry);
+}
+pending.set(chatId, senderId, entry);
+return reply(msg, addApiPrompt(entry.step, false, entry.name, true));
+}
+
 /** 发起一个带自定义编号列表的 pending（识图/音色/人格/搜索 key 等）。 */
 async function startListPending(msg, chatId, senderId, entry, header, lines) {
 pending.set(chatId, senderId, entry);
@@ -817,8 +897,8 @@ const VISION_PROBE_IMAGE_URL = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAB
  * 失败也不把提供方打进冷却。30 秒超时兜底，免得接口挂死拖住命令流程。
  * @returns {Promise<{ok:true, answer:string}|{ok:false, error:string}>}
  */
-async function probeVisionModel(apiName, model) {
-const entry = pool.getByName(apiName);
+async function probeVisionModel(apiName, model, entryOverride) {
+const entry = entryOverride || pool.getByName(apiName);
 if (!entry) return { ok: false, error: `提供方「${apiName}」不存在` };
 const messages = [
 {
@@ -861,19 +941,38 @@ if (timer) clearTimeout(timer);
         if (!name || /\s/.test(name)) return reply(msg, "名字是空的或带空格，这次没加上。重新发命令再试。");
         if (providerNameTaken(name)) return reply(msg, `提供方名字「${name}」已经有了，换个名字重新发命令再加。`);
         pending.set(chatId, senderId, { ...entry, step: 2, name });
-        return reply(msg, addApiPrompt(2, entry.image, name));
+        return reply(msg, addApiPrompt(2, entry.image, name, entry.vision));
       }
       if (entry.step === 2) {
         const baseURL = text.trim();
         if (!/^https?:\/\/\S+$/i.test(baseURL)) return reply(msg, "baseURL 不像网址（要以 http:// 或 https:// 开头），这次没加上。重新发命令再试。");
         pending.set(chatId, senderId, { ...entry, step: 3, baseURL });
-        return reply(msg, addApiPrompt(3, entry.image, entry.name));
+        return reply(msg, addApiPrompt(3, entry.image, entry.name, entry.vision));
       }
       if (entry.step === 3) {
         const apiKeyValue = text.trim();
         if (!apiKeyValue) return reply(msg, "key 是空的，这次没加上。重新发命令再试。");
-        pending.set(chatId, senderId, { ...entry, step: 4, [keyProp]: apiKeyValue });
+        const next = { ...entry, step: 4, [keyProp]: apiKeyValue };
+        if (entry.vision) {
+          // 识图专用：第四步不是手打模型名，而是拉这个 API 的模型列表来挑。
+          return presentVisionModelList(msg, chatId, senderId, next);
+        }
+        pending.set(chatId, senderId, next);
         return reply(msg, addApiPrompt(4, entry.image, entry.name));
+      }
+      if (entry.vision) {
+        // 识图专用第四步：数字从列表里选、或直接发模型名全文；收尾（实测+落盘）在 finishVisionApiAdd。
+        let model = null;
+        const d = /^\d+$/.test(text) ? Number.parseInt(text, 10) : null;
+        if (entry.models && d !== null) {
+          model = d >= 1 && d <= entry.models.length ? entry.models[d - 1] : null;
+          if (!model) return reply(msg, "编号超出范围，这次没加上。重新发 /ai 加识图api 再试。");
+        } else {
+          model = text.trim();
+        }
+        if (!model) return reply(msg, "模型名是空的，这次没加上。重新发命令再试。");
+        const client = createApiClient(entry.baseURL, entry[keyProp]);
+        return finishVisionApiAdd(msg, { name: entry.name, baseURL: entry.baseURL, apiKeyValue: entry[keyProp], model, client });
       }
       const model = text.trim();
       if (!model) return reply(msg, "模型名是空的，这次没加上。重新发命令再试。");
@@ -914,7 +1013,12 @@ if (timer) clearTimeout(timer);
         pending.set(chatId, senderId, { kind: "加识图", step: 2, apiName: name, models: shown });
         const lines = shown.map((id, i) => `${i + 1}. ${id}${looksVisionCapable(id) ? "（可识图）" : ""}`).join("\n");
         const more = ids.length > shown.length ? `\n（共 ${ids.length} 个，只列前 ${shown.length} 个；想用其它的直接发模型名全文也行）` : "\n（也可以直接发模型名全文）";
-        return reply(msg, `已选 API「${name}」。给它加哪个识图模型？回数字选（60 秒内有效）：\n${lines}${more}\n（带「可识图」的是按名字猜的，选完会拿测试图实测一次）`);
+        // 一个像识图的都没有：多半这家 API 就不支持识图（号主实测 DeepSeek 时踩过），
+        // 先把话说在前面，别让人对着纯文本模型挑半天；加新识图 API 有专门命令。
+        const tail = shown.some((id) => looksVisionCapable(id))
+          ? "\n（带「可识图」的是按名字猜的，选完会拿测试图实测一次）"
+          : "\n提醒：这个 API 的模型里没一个像能识图的（多半不支持），选了也会在实测那步失败；要加一家新的识图 API，用 /ai 加识图api。";
+        return reply(msg, `已选 API「${name}」。给它加哪个识图模型？回数字选（60 秒内有效）：\n${lines}${more}${tail}`);
       }
       let model = null;
       if (entry.models && digits !== null) model = pickFrom(entry.models);
@@ -1042,6 +1146,15 @@ if (timer) clearTimeout(timer);
       if (!model) return reply(msg, "没选到模型：回列表里的数字，或者直接发模型名全文。重新发 /ai 换模型 再试。");
       const overrides = { ...(config.providerOverrides || {}) };
       overrides[entry.providerName] = { ...(overrides[entry.providerName] || {}), model };
+      if (entry.vision) {
+        // 识图专用提供方：只写 overrides 并同步识图池里它的模型（识图调用认的是池条目），
+        // 绝不能设成聊天默认提供方。
+        const vp = cloneVisionPool();
+        const old = (vp[entry.providerName] || [])[0];
+        vp[entry.providerName] = [{ model, weight: old && old.weight > 0 ? old.weight : 7 }];
+        if (!saveAndReload({ providerOverrides: overrides, visionPool: vp })) return reply(msg, "保存失败，请看日志。");
+        return reply(msg, `已把识图 API「${entry.providerName}」的模型换成 ${model}，识图池已同步，已生效。`);
+      }
       if (entry.image) {
         // 生图提供方只换生图模型，绝不能设成聊天默认提供方。
         if (!saveAndReload({ providerOverrides: overrides })) return reply(msg, "保存失败，请看日志。");
@@ -1089,11 +1202,11 @@ if (timer) clearTimeout(timer);
         ids = [];
       }
       if (ids.length === 0) {
-        pending.set(chatId, senderId, { kind: "换模型", step: 2, providerName: target.name, models: null, image: target.image === true });
+        pending.set(chatId, senderId, { kind: "换模型", step: 2, providerName: target.name, models: null, image: target.image === true, vision: target.vision === true });
         return reply(msg, `「${target.name}」的模型列表没拉到（接口可能不支持查询）。直接发模型名全文就能换，60 秒内有效。`);
       }
       const shown = ids.slice(0, 50);
-      pending.set(chatId, senderId, { kind: "换模型", step: 2, providerName: target.name, models: shown, image: target.image === true });
+      pending.set(chatId, senderId, { kind: "换模型", step: 2, providerName: target.name, models: shown, image: target.image === true, vision: target.vision === true });
       const lines = shown.map((id, i) => `${i + 1}. ${id}${id === target.model ? "（当前）" : ""}`).join("\n");
       const more = ids.length > shown.length ? `\n（共 ${ids.length} 个，只列前 ${shown.length} 个；想用其它的直接发模型名全文也行）` : "\n（也可以直接发模型名全文）";
       return reply(msg, `「${target.name}」可用模型（当前：${target.model}），回数字选（60 秒内有效）：\n${lines}${more}`);
@@ -1434,6 +1547,10 @@ if (timer) clearTimeout(timer);
 
     if (cmd === "加生图api") {
       return startAddApi(msg, chatId, senderId, rest, true);
+    }
+
+    if (cmd === "加识图api") {
+      return startAddVisionApi(msg, chatId, senderId, rest);
     }
 
     // ---- 识图池 ----

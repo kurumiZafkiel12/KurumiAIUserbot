@@ -861,6 +861,54 @@ test("0.0.3 群聊判定看会话 ID：peer 无群信号时负数 chatId 也封�
   assert.equal(gParts.length, 2, "靠 chatId 判定群聊，补发 2 条封顶 3 条");
 });
 
+test("0.0.7 加识图api 分步：名字→地址→key→列表挑模型，存为识图专用并实测通过", async () => {
+  const stubClient = {
+    models: { list: async () => ({ data: [{ id: "gemini-3-flash-preview" }, { id: "some-text-model" }] }) },
+    chat: { completions: { create: async () => ({ choices: [{ message: { content: "红色" } }] }) } },
+  };
+  const f = fixture({ deps: { createApiClient: () => stubClient } });
+  await f.handler(f.event("/ai 加识图api"));
+  await f.handler(f.event("openlux"));
+  await f.handler(f.event("https://api.openlux.ai/v1"));
+  await f.handler(f.event("FAKE-VISION-KEY"));
+  const listReply = f.sends.map((m) => m.message).join("\n");
+  assert.match(listReply, /gemini-3-flash-preview（可识图）/);
+  await f.handler(f.event("1"));
+  const saved = JSON.parse(fs.readFileSync(path.join(tmpRoot, "config.json"), "utf-8"));
+  const added = (saved.customProviders || []).find((p) => p.name === "openlux");
+  assert.ok(added, "应保存新提供方");
+  assert.equal(added.vision, true);
+  assert.equal(added.model, "gemini-3-flash-preview");
+  assert.deepEqual(saved.visionPool.openlux, [{ model: "gemini-3-flash-preview", weight: 7 }]);
+  const all = f.sends.map((m) => m.message).join("\n");
+  assert.match(all, /实测通过/);
+  assert.ok(!all.includes("FAKE-VISION-KEY"), "key 不得回显");
+});
+
+test("0.0.7 加识图：目标 API 没有像识图的模型时，列表里先提醒并指路加识图api", async () => {
+  const f = fixture();
+  await f.handler(f.event("/ai 加识图"));
+  await f.handler(f.event("1"));
+  const all = f.sends.map((m) => m.message).join("\n");
+  assert.match(all, /没一个像能识图/);
+  assert.match(all, /\/ai 加识图api/);
+});
+
+test("0.0.7 换模型对识图专用提供方：只写 overrides 并同步识图池，不设聊天默认", async () => {
+  const f = fixture({ config: { visionPool: { default: [{ model: "old-vision", weight: 3 }] } } });
+  f.pool.entries[0].vision = true;
+  f.pool.entries[0].client.models.list = async () => ({ data: [{ id: "old-vision" }, { id: "new-vision" }] });
+  await f.handler(f.event("/ai 换模型"));
+  await f.handler(f.event("1"));
+  await f.handler(f.event("2"));
+  const saved = JSON.parse(fs.readFileSync(path.join(tmpRoot, "config.json"), "utf-8"));
+  assert.equal(saved.providerOverrides.default.model, "new-vision");
+  assert.deepEqual(saved.visionPool.default, [{ model: "new-vision", weight: 3 }]);
+  const all = f.sends.map((m) => m.message).join("\n");
+  assert.match(all, /识图池已同步/);
+  assert.ok(!all.includes("设为默认提供方"), "识图专用提供方不能被设成聊天默认");
+});
+
 test("0.0.6 加识图：选 API 后列出它的模型并标记可识图，回序号存池（权重7）且实测通过", async () => {
   const f = fixture({ answer: "红色" });
   f.pool.entries[0].client.models.list = async () => ({

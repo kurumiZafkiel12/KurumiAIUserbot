@@ -12,6 +12,14 @@ const FAILURE_COOLDOWN_MS = 30_000;
 // 正常长答；接口不认 max_tokens 时 chat/visionChat 都会去掉它重试一次。
 const CHAT_MAX_OUTPUT_TOKENS = 4096;
 
+/**
+ * 临时 API 客户端：加识图api 时提供方还没存进池子，先拿 baseURL+key 造一个
+ * 查它的模型列表、拿测试图实测。构造方式与池内条目一致。
+ */
+export function createApiClient(baseURL, apiKeyValue) {
+  return new OpenAI({ ["api" + "Key"]: apiKeyValue || "not-needed", baseURL });
+}
+
 export class ProviderPool {
   /**
    * @param {Array<object>} defs 提供方配置：{name, baseURL, apiKey, model, weight, dailyLimit}
@@ -38,6 +46,7 @@ export class ProviderPool {
         modelAuto: def.modelAuto === true, // 模型名是启动时自动识别的（/ai 状态里标出来）
         baseURL: def.baseURL,
         image: def.image === true, // 生图提供方（/ai 加生图api）：不进聊天池，只用来生图
+        vision: def.vision === true, // 识图专用提供方（/ai 加识图api）：不进聊天池，只用来识图
         disabled: def.disabled === true, // 被号主禁用（/ai 禁用api）：不参与挑选
         weight: Number.isFinite(def.weight) && def.weight > 0 ? def.weight : 1,
         client: new OpenAI({ [keyProp]: def[keyProp] || "not-needed", baseURL: def.baseURL }),
@@ -56,21 +65,22 @@ export class ProviderPool {
     return this.entries.find((e) => e.name === name) || null;
   }
 
-  /** 当前可用的聊天提供方（未被禁用、不是生图提供方、未超每日限额、不在冷却、且不在排除名单里）。 */
+  /** 当前可用的聊天提供方（未被禁用、不是生图/识图专用提供方、未超每日限额、不在冷却、且不在排除名单里）。 */
   available(exclude = new Set(), now = Date.now()) {
     return this.entries.filter(
       (e) =>
         !e.disabled &&
         !e.image &&
+        !e.vision &&
         !exclude.has(e.name) &&
         e.cooldownUntil <= now &&
         e.counter.canUse(new Date(now)),
     );
   }
 
-  /** 全部聊天提供方（不含生图提供方），含被禁用的（编号列表/选择用）。 */
+  /** 全部聊天提供方（不含生图/识图专用提供方），含被禁用的（编号列表/选择用）。 */
   chatEntries() {
-    return this.entries.filter((e) => !e.image);
+    return this.entries.filter((e) => !e.image && !e.vision);
   }
 
   /** 第一个可用的生图提供方（未禁用、未超限额、不在冷却）；没有返回 null。 */
@@ -82,9 +92,9 @@ export class ProviderPool {
     );
   }
 
-  /** 还在启用状态的聊天提供方个数（禁用命令判断「是不是最后一个」用；生图提供方不算）。 */
+  /** 还在启用状态的聊天提供方个数（禁用命令判断「是不是最后一个」用；生图/识图专用提供方不算）。 */
   enabledCount() {
-    return this.entries.filter((e) => !e.disabled && !e.image).length;
+    return this.entries.filter((e) => !e.disabled && !e.image && !e.vision).length;
   }
 
   /**
@@ -102,6 +112,7 @@ export class ProviderPool {
         p &&
         !p.disabled &&
         !p.image &&
+        !p.vision &&
         !exclude.has(p.name) &&
         p.cooldownUntil <= now &&
         p.counter.canUse(new Date(now))
@@ -273,7 +284,7 @@ export class ProviderPool {
       const limitText = s.limit > 0 ? `${s.count}/${s.limit}` : `${s.count}/不限`;
       const cooling = e.cooldownUntil > Date.now() ? "（冷却中）" : "";
       const off = e.disabled ? "（已禁用）" : "";
-      const img = e.image ? "（生图）" : "";
+      const img = e.image ? "（生图）" : e.vision ? "（识图）" : "";
       return `- ${e.name}（${e.model}${e.modelAuto ? "，自动识别" : ""}）：今日 ${limitText}${cooling}${off}${img}`;
     });
     return lines.join("\n");

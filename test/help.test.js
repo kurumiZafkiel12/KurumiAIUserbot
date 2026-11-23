@@ -15,7 +15,7 @@ for (const s of sections) assert.ok(OWNER_HELP_TEXT.includes(H(s)), `缺小节 $
 
 test("号主帮助只列真实命令（关键命令齐全）", () => {
 for (const cmd of [
-"/ai 加识图", "/ai 加生图api", "/ai 换tts接口", "/ai 换ttskey", "/ai 加音色", "/ai 加人格",
+"/ai 加识图", "/ai 加生图api", "/ai 加识图api", "/ai 换tts接口", "/ai 换ttskey", "/ai 加音色", "/ai 加人格",
 "/ai 开启记录", "/ai 换搜索key", "/ai 破甲", "/ai 改名", "/ai 设人设",
 ]) {
 assert.ok(OWNER_HELP_TEXT.includes(cmd), `缺命令 ${cmd}`);

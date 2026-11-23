@@ -35,6 +35,27 @@ test("被禁用的提供方不参与挑选，preferred 指向它也跳过", () =
   assert.equal(pool.getByName("b").disabled, true);
 });
 
+test("识图专用提供方不进聊天池，但 getByName 查得到、识图调用可用", async () => {
+  const pool = new ProviderPool(
+    [
+      { name: "chat", baseURL: "https://a.example/v1", model: "m-chat", weight: 1 },
+      { name: "vis", baseURL: "https://v.example/v1", model: "m-vis", weight: 1, vision: true },
+      { name: "img", baseURL: "https://i.example/v1", model: "m-img", weight: 1, image: true },
+    ],
+    silentLogger,
+  );
+  assert.deepEqual(pool.chatEntries().map((e) => e.name), ["chat"]);
+  assert.deepEqual(pool.available().map((e) => e.name), ["chat"]);
+  assert.equal(pool.enabledCount(), 1);
+  const picked = pool.pick(new Set(), "vis");
+  assert.equal(picked.name, "chat", "preferred 指向识图专用提供方也应跳过");
+  const vis = pool.getByName("vis");
+  assert.equal(vis.vision, true);
+  vis.client = { chat: { completions: { create: async () => ({ choices: [{ message: { content: "红色" } }] }) } } };
+  const text = await pool.visionChat(vis, "m-vis", [{ role: "user", content: [] }]);
+  assert.equal(text, "红色");
+});
+
 test("chat 采集末尾 usage 并通过 onUsage 回调", async () => {
   const pool = makePool();
   const entry = pool.getByName("a");
