@@ -113,7 +113,7 @@ export const OWNER_HELP_TEXT = `可用命令：
 【API 管理】
 /ai 查看api
 /ai 查看模型 <API名字>
-/ai 换模型（回序号选 API，再回序号从它的全部模型里挑；挑完即默认用它）
+/ai 换模型（回序号选 API，再回序号从它的全部模型里挑，不用记模型名；聊天 API 挑完即默认用它，生图 API 只换生图模型）
 /ai 限额（再回 <序号>）
 /ai 换key（再回 <序号> 选 API，再发新 key 全文；改完立即生效，不用重启）
 /ai 禁用api（再回 <序号>）
@@ -743,7 +743,7 @@ const what = image? "生图 API": "聊天 API";
 if (step === 1) return `开始添加${what}，分四步。先发名字（60 秒内直接发，不要带空格）。`;
 if (step === 2) return `名字：${name}。接着发 baseURL（如 https://api.example.com/v1），60 秒内有效。`;
 if (step === 3) return "地址收到。接着发 key 全文，60 秒内有效。（只用于保存，不会回显）";
-return "key 已收到。最后发模型名，60 秒内有效。";
+return "key 已收到。最后发模型名，60 秒内有效。（不知道模型名就先随便填一个，加上后用 /ai 换模型 从列表里回序号挑）";
 }
 
 /** 加 API 命令入口：参数给全（4 段）就一步保存；给不全就按已给的段数起分步 pending。 */
@@ -968,6 +968,11 @@ return out;
       if (!model) return reply(msg, "没选到模型：回列表里的数字，或者直接发模型名全文。重新发 /ai 换模型 再试。");
       const overrides = { ...(config.providerOverrides || {}) };
       overrides[entry.providerName] = { ...(overrides[entry.providerName] || {}), model };
+      if (entry.image) {
+        // 生图提供方只换生图模型，绝不能设成聊天默认提供方。
+        if (!saveAndReload({ providerOverrides: overrides })) return reply(msg, "保存失败，请看日志。");
+        return reply(msg, `已把生图提供方「${entry.providerName}」的模型换成 ${model}，已生效。之后生图会用它。`);
+      }
       if (!saveAndReload({ providerOverrides: overrides, defaultProvider: entry.providerName })) return reply(msg, "保存失败，请看日志。");
       return reply(msg, `已把「${entry.providerName}」的模型换成 ${model}，并设为默认提供方，已生效。之后的提问都会优先用它。`);
     }
@@ -999,7 +1004,7 @@ return out;
     const target = pool.entries[idx];
 
     if (entry.kind === "换模型") {
-      if (target.image) return reply(msg, `「${target.name}」是生图提供方，不能换它的聊天模型。`);
+      // 生图提供方也走这里换它的生图模型（v0.9.21 起；第二步按 entry.image 区分落盘方式）。
       // 拉这个提供方的全部模型列出来让号主挑（同 /ai 查看模型 的查法）；
       // 拉不到（接口不支持查询）就退回「直接发模型名」。
       let ids = [];
@@ -1010,11 +1015,11 @@ return out;
         ids = [];
       }
       if (ids.length === 0) {
-        pending.set(chatId, senderId, { kind: "换模型", step: 2, providerName: target.name, models: null });
+        pending.set(chatId, senderId, { kind: "换模型", step: 2, providerName: target.name, models: null, image: target.image === true });
         return reply(msg, `「${target.name}」的模型列表没拉到（接口可能不支持查询）。直接发模型名全文就能换，60 秒内有效。`);
       }
       const shown = ids.slice(0, 50);
-      pending.set(chatId, senderId, { kind: "换模型", step: 2, providerName: target.name, models: shown });
+      pending.set(chatId, senderId, { kind: "换模型", step: 2, providerName: target.name, models: shown, image: target.image === true });
       const lines = shown.map((id, i) => `${i + 1}. ${id}${id === target.model ? "（当前）" : ""}`).join("\n");
       const more = ids.length > shown.length ? `\n（共 ${ids.length} 个，只列前 ${shown.length} 个；想用其它的直接发模型名全文也行）` : "\n（也可以直接发模型名全文）";
       return reply(msg, `「${target.name}」可用模型（当前：${target.model}），回数字选（60 秒内有效）：\n${lines}${more}`);

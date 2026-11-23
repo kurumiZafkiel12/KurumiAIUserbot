@@ -707,3 +707,27 @@ test("v0.9.20 加生图api 一步式仍可用；分步中途重名被拒", async
   assert.match(reply, /已经有了/);
 });
 
+
+test("v0.9.21 换模型支持生图提供方：列表里挑，只写 overrides 不动聊天默认", async () => {
+  const f = fixture({
+    config: {
+      providers: [
+        { name: "default", model: "mock-model", baseURL: "https://offline.invalid/v1", apiKey: "x", dailyLimit: 0 },
+        { name: "imgone", model: "img-a", baseURL: "https://img.invalid/v1", apiKey: "y", dailyLimit: 0, image: true },
+      ],
+    },
+  });
+  f.pool.entries[1].client.models.list = async () => ({ data: [{ id: "img-a" }, { id: "img-b" }] });
+  await f.handler(f.event("/ai 换模型"));
+  await f.handler(f.event("2"));
+  const listReply = f.sends.map((m) => m.message).join("\n");
+  assert.match(listReply, /img-b/);
+  assert.match(listReply, /（当前）/);
+  await f.handler(f.event("2"));
+  const saved = JSON.parse(fs.readFileSync(path.join(tmpRoot, "config.json"), "utf-8"));
+  assert.equal(saved.providerOverrides.imgone.model, "img-b");
+  assert.notEqual(saved.defaultProvider, "imgone");
+  const all = f.sends.map((m) => m.message).join("\n");
+  assert.match(all, /已把生图提供方「imgone」的模型换成 img-b/);
+  assert.equal(f.modelCalls.length, 0);
+});
