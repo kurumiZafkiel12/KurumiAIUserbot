@@ -65,6 +65,23 @@ export function pickVisionEntry(entries, rng = Math.random) {
   return list[list.length - 1];
 }
 
+/**
+ * 按模型名猜它支不支持识图（只给加识图时的列表打个参考标记，最终以实测为准）。
+ * 覆盖主流多模态系列的命名特征；没命中的不代表不能识图，命中的也可能被
+ * 某个中转渠道阉割——所以这只是导航提示，不是判定。
+ */
+const VISION_NAME_HINTS = [
+  /gemini/i, /claude/i, /grok/i, /vision/i, /llava/i, /internvl/i, /qvq/i,
+  /gpt-4o/i, /gpt-4-turbo/i, /gpt-5/i, /gpt-6/i, /chatgpt-4o/i,
+  /qwen[-\w.]*vl/i, /glm-4v/i, /minicpm-v/i, /step-1v/i, /yi-vision/i,
+  /doubao[-\w.]*vision/i, /hunyuan[-\w.]*vision/i, /moonshot[-\w.]*vision/i,
+];
+
+export function looksVisionCapable(model) {
+  const s = String(model || "");
+  return VISION_NAME_HINTS.some((re) => re.test(s));
+}
+
 /** 识图池的编号列表文本（识图列表命令与删/改权重的选项共用）。 */
 export function visionListText(pool) {
   const items = flattenVisionPool(pool);

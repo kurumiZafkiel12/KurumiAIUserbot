@@ -36,7 +36,7 @@ import { SlowdownTracker} from "./limits.js";
 import { findKeyword, isSensitiveBlocked, unwrapArg} from "./moderation.js";
 import { formatServerInfo} from "./serverinfo.js";
 import { collectSecrets, scrubSecrets} from "./security.js";
-import { flattenVisionPool, pickVisionEntry, visionListText} from "./vision.js";
+import { flattenVisionPool, pickVisionEntry, visionListText, looksVisionCapable } from "./vision.js";
 import { GroupRecords, renderRecords} from "./records.js";
 import {
 planSearch,
@@ -122,7 +122,7 @@ export const OWNER_HELP_TEXT = `可用命令：
 /ai 加生图api（分步添加同上；只用于生图，不参与聊天）
 
 【识图】
-/ai 加识图（再回 <序号> 选 API，再发模型名，再发权重数字）
+/ai 加识图（再回 <序号> 选 API，再回 <序号> 从它的模型列表里挑；选完自动拿测试图实测）
 /ai 删识图（再回 <序号>）
 /ai 识图权重（再回 <序号> 选条目，再发新权重）
 /ai 识图列表
@@ -808,6 +808,43 @@ out[k] = (arr || []).map((it) => ({...it}));
 return out;
 }
 
+// 加识图实测用的测试图：一张 16x16 纯红 PNG（80 字节），问它什么颜色。
+const VISION_PROBE_IMAGE_URL = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAIAAACQkWg2AAAAF0lEQVR4nGP4z8BAEiJN9aiGUQ1DSgMAkPn/Afnh+ngAAAAASUVORK5CYII=";
+
+/**
+ * 识图实测（v0.0.6）：拿测试图真调一次目标 API 的目标模型，验证它收不收图。
+ * 直调 pool.visionChat、不走 reserve/markFailure——配置期验证不吃每日名额、
+ * 失败也不把提供方打进冷却。30 秒超时兜底，免得接口挂死拖住命令流程。
+ * @returns {Promise<{ok:true, answer:string}|{ok:false, error:string}>}
+ */
+async function probeVisionModel(apiName, model) {
+const entry = pool.getByName(apiName);
+if (!entry) return { ok: false, error: `提供方「${apiName}」不存在` };
+const messages = [
+{
+role: "user",
+content: [
+{ type: "text", text: "这张图片是什么颜色？只回颜色名，不要解释。" },
+{ type: "image_url", image_url: { url: VISION_PROBE_IMAGE_URL } },
+],
+},
+];
+let timer = null;
+try {
+const text = await Promise.race([
+pool.visionChat(entry, model, messages),
+new Promise((_, reject) => {
+timer = setTimeout(() => reject(new Error("实测超时（30 秒没回）")), 30000);
+}),
+]);
+return { ok: true, answer: String(text).trim().slice(0, 50) };
+} catch (err) {
+return { ok: false, error: String((err && err.message) || err).slice(0, 120) };
+} finally {
+if (timer) clearTimeout(timer);
+}
+}
+
   /**
    * 执行一条 pending（号主回数字 / 回全文时调用）。pending 已被调用方消费，
    * 需要进入下一步的分支会自己重新登记。
@@ -852,32 +889,52 @@ return out;
       return list[digits - 1];
     };
 
-    // ---- 识图：加识图三步（选 API -> 发模型名 -> 发权重） ----
+    // ---- 识图：加识图两步（选 API -> 从它的模型列表里挑，选完实测） ----
+    // v0.0.6 完善：旧版第二步要手打模型名（打错、选了纯文本模型都静默存下、
+    // 发图时才暴雷）、第三步还要单独发权重，号主指出不够完善。改同 /ai 换模型：
+    // 拉列表回序号挑（拉不到才手打），权重默认 7（要改用 /ai 识图权重），
+    // 存池前拿测试图实测一次，行不行当场说清。
     if (entry.kind === "加识图") {
       if (entry.step === 1) {
         const name = pickFrom(entry.apiList);
         if (!name) return reply(msg, "编号超出范围，请重新发 /ai 加识图。");
-        pending.set(chatId, senderId, { kind: "加识图", step: 2, apiName: name });
-        return reply(msg, `已选 API「${name}」。请发识图模型名（60 秒内直接发模型名）。`);
+        const target = pool.getByName(name);
+        let ids = [];
+        try {
+          const list = await target.client.models.list();
+          ids = ((list && list.data) || []).map((m) => m && m.id).filter(Boolean);
+        } catch {
+          ids = [];
+        }
+        if (ids.length === 0) {
+          pending.set(chatId, senderId, { kind: "加识图", step: 2, apiName: name, models: null });
+          return reply(msg, `已选 API「${name}」。它的模型列表没拉到（接口可能不支持查询），直接发识图模型名全文（60 秒内有效），发完会实测一次。`);
+        }
+        const shown = ids.slice(0, 50);
+        pending.set(chatId, senderId, { kind: "加识图", step: 2, apiName: name, models: shown });
+        const lines = shown.map((id, i) => `${i + 1}. ${id}${looksVisionCapable(id) ? "（可识图）" : ""}`).join("\n");
+        const more = ids.length > shown.length ? `\n（共 ${ids.length} 个，只列前 ${shown.length} 个；想用其它的直接发模型名全文也行）` : "\n（也可以直接发模型名全文）";
+        return reply(msg, `已选 API「${name}」。给它加哪个识图模型？回数字选（60 秒内有效）：\n${lines}${more}\n（带「可识图」的是按名字猜的，选完会拿测试图实测一次）`);
       }
-      if (entry.step === 2) {
-        const model = text.trim();
-        if (!model) return reply(msg, "模型名是空的，没加上。重新发 /ai 加识图 再试。");
-        pending.set(chatId, senderId, { kind: "加识图", step: 3, apiName: entry.apiName, model });
-        return reply(msg, `模型名：${model}。请单独发权重数字（正整数，越大越常被选，如 7），60 秒内有效。`);
+      let model = null;
+      if (entry.models && digits !== null) model = pickFrom(entry.models);
+      if (!model) {
+        if (entry.models && digits !== null) return reply(msg, "编号超出范围，这次没加上。重新发 /ai 加识图 再试。");
+        model = text.trim();
       }
-      const w = digits;
-      if (w === null || w <= 0) return reply(msg, "权重必须是正整数，这次没加上。重新发 /ai 加识图 再试。");
+      if (!model) return reply(msg, "模型名是空的，没加上。重新发 /ai 加识图 再试。");
+      const probe = await probeVisionModel(entry.apiName, model);
       const vp = cloneVisionPool();
       const arr = vp[entry.apiName] || (vp[entry.apiName] = []);
-      const existing = arr.find((it) => it.model === entry.model);
-      if (existing) existing.weight = w;
-      else arr.push({ model: entry.model, weight: w });
+      const existing = arr.find((it) => it.model === model);
+      if (existing) existing.weight = 7;
+      else arr.push({ model, weight: 7 });
       if (!saveAndReload({ visionPool: vp })) return reply(msg, "保存失败，请看日志。");
-      return reply(
-        msg,
-        `已给「${entry.apiName}」加识图：模型 ${entry.model}（权重 ${w}），已生效。发图提问时会从识图池里挑模型。`,
-      );
+      const head = `已给「${entry.apiName}」加识图：模型 ${model}（权重 7，要调整用 /ai 识图权重），已生效。`;
+      if (probe.ok) {
+        return reply(msg, `${head}\n实测通过：拿一张红色测试图问它，它回了「${probe.answer}」，接口收图正常。`);
+      }
+      return reply(msg, `${head}\n但实测没通过：${probe.error}。现在发图大概率用不了，建议核对模型名，或用 /ai 删识图 删掉重加。`);
     }
 
     // ---- 识图：删识图 ----
@@ -2640,7 +2697,6 @@ return out;
             return;
           } else if (
             (pk.entry.step === 2 && pk.entry.kind === "限额") ||
-            (pk.entry.step === 3 && pk.entry.kind === "加识图") ||
             (pk.entry.step === 2 && pk.entry.kind === "识图权重")
           ) {
             const what = pk.entry.kind === "限额" ? "限额要发纯数字（0 = 不限）。" : "这一步要发纯数字（权重）。";

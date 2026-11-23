@@ -861,6 +861,60 @@ test("0.0.3 群聊判定看会话 ID：peer 无群信号时负数 chatId 也封�
   assert.equal(gParts.length, 2, "靠 chatId 判定群聊，补发 2 条封顶 3 条");
 });
 
+test("0.0.6 加识图：选 API 后列出它的模型并标记可识图，回序号存池（权重7）且实测通过", async () => {
+  const f = fixture({ answer: "红色" });
+  f.pool.entries[0].client.models.list = async () => ({
+    data: [{ id: "mock-model" }, { id: "gemini-3-flash-preview" }, { id: "plain-text-model" }],
+  });
+  await f.handler(f.event("/ai 加识图"));
+  await f.handler(f.event("1"));
+  const listReply = f.sends.map((m) => m.message).join("\n");
+  assert.match(listReply, /gemini-3-flash-preview（可识图）/);
+  const plainLine = listReply.split("\n").find((l) => l.includes("plain-text-model"));
+  assert.ok(plainLine && !plainLine.includes("可识图"), "纯文本模型不应打可识图标记");
+  await f.handler(f.event("2"));
+  const saved = JSON.parse(fs.readFileSync(path.join(tmpRoot, "config.json"), "utf-8"));
+  assert.deepEqual(saved.visionPool.default, [{ model: "gemini-3-flash-preview", weight: 7 }]);
+  const all = f.sends.map((m) => m.message).join("\n");
+  assert.match(all, /实测通过/);
+  assert.match(all, /红色/);
+  assert.equal(f.modelCalls.length, 1, "实测应真调一次模型");
+  const probeContent = f.modelCalls[0].messages[0].content;
+  assert.ok(Array.isArray(probeContent) && probeContent.some((p) => p.type === "image_url"), "实测调用应带图");
+});
+
+test("0.0.6 加识图：实测失败也存池，但回复明说没通过", async () => {
+  const f = fixture({
+    model: async () => {
+      throw new Error("400 model does not support images");
+    },
+  });
+  await f.handler(f.event("/ai 加识图"));
+  await f.handler(f.event("1"));
+  await f.handler(f.event("1"));
+  const saved = JSON.parse(fs.readFileSync(path.join(tmpRoot, "config.json"), "utf-8"));
+  assert.deepEqual(saved.visionPool.default, [{ model: "mock-model", weight: 7 }]);
+  const all = f.sends.map((m) => m.message).join("\n");
+  assert.match(all, /实测没通过/);
+  assert.match(all, /does not support images/);
+});
+
+test("0.0.6 加识图：模型列表拉不到时，手打模型名全文也能加", async () => {
+  const f = fixture({ answer: "红色" });
+  f.pool.entries[0].client.models.list = async () => {
+    throw new Error("not supported");
+  };
+  await f.handler(f.event("/ai 加识图"));
+  await f.handler(f.event("1"));
+  const prompt = f.sends.map((m) => m.message).join("\n");
+  assert.match(prompt, /直接发识图模型名全文/);
+  await f.handler(f.event("typed-vision-model"));
+  const saved = JSON.parse(fs.readFileSync(path.join(tmpRoot, "config.json"), "utf-8"));
+  assert.deepEqual(saved.visionPool.default, [{ model: "typed-vision-model", weight: 7 }]);
+  const all = f.sends.map((m) => m.message).join("\n");
+  assert.match(all, /实测通过/);
+});
+
 test("0.0.5 机械刷量改模型回绝：数到10000 照常调模型，但系统提示注入不真数指令", async () => {
   const f = fixture({ answer: "才不要，真数要累死鱼了" });
   await f.handler(f.event("@mybot 从1数到10000", { sender: "999", group: true }));
