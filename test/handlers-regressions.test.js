@@ -788,3 +788,32 @@ test("v0.9.24 系统提示含消息核实段：未证实不确认不编数字、
   assert.ok(sys.includes("不许编造涨幅、金额、时间、人数这类具体数字"), "须含不编数字");
   assert.ok(sys.includes("不许断言没这回事"), "须含不凭旧知识否定");
 });
+
+test("v0.9.25 分条尾条行数爆表时折叠：短条不折，尾条带 collapsed 引用实体", async () => {
+  const story = Array.from({ length: 14 }, (_, i) => `第${i + 1}行小故事`).join("\n");
+  const f = fixture({
+    config: { systemPrompt: "自定义人设。", systemPromptIsDefault: false },
+    answer: story,
+  });
+  await f.handler(f.event("讲个故事", { sender: "999" }));
+  const tail = f.sends.find((s) => s.message.includes("第5行小故事"));
+  assert.ok(tail, "尾条应发出");
+  assert.ok(tail.message.split("\n").length > 8, "尾条应合并了多行");
+  const ent = (tail.formattingEntities || [])[0];
+  assert.ok(ent && ent.className === "MessageEntityBlockquote" && ent.collapsed === true, "尾条应折叠");
+  const head = f.sends.find((s) => s.message === "第2行小故事");
+  assert.ok(head, "前面的短条应发出");
+  assert.equal(head.formattingEntities, undefined, "单行短条不折叠");
+});
+
+test("v0.9.25 单条多行短文也按行数折叠，行数不多的不折", async () => {
+  const many = Array.from({ length: 10 }, (_, i) => `一行${i}`).join("\n");
+  const f = fixture({ answer: many });
+  await f.handler(f.event("说点什么", { sender: "999" }));
+  const quoted = f.edits.filter((e) => (e.formattingEntities || []).some((x) => x.collapsed === true));
+  assert.ok(quoted.length >= 1, "10 行短文（字数不到 1000）应按行数折叠");
+  const few = fixture({ answer: "一共三行\n第二行\n第三行" });
+  await few.handler(few.event("说点什么", { sender: "999" }));
+  const quoted2 = few.edits.filter((e) => (e.formattingEntities || []).some((x) => x.collapsed === true));
+  assert.equal(quoted2.length, 0, "3 行不折叠");
+});

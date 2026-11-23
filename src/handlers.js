@@ -353,14 +353,20 @@ return { ownerId: config.ownerId, adminIds: [...adminIds], guestIds: [...guestId
 }
 
 const QUOTE_MIN_LENGTH = 1000;
+/** 折叠的行数门槛：单条消息超过 8 行也折叠（v0.9.25）。 */
+const QUOTE_MIN_LINES = 8;
 
 /**
  * 超长文本的 TG 可展开引用实体：整段折叠成引用块，点开才展开，避免长文刷屏
  * （号主要求，帮助这类超长文尤其明显）。短文本返回 undefined（不加格式）。
  * 长度按 JS 字符串长度计，与 TG 的 UTF-16 偏移口径一致。
+ * 触发条件二选一：字数 ≥1000，或行数 >8——人设分条的尾条会把剩余行数全并成一条，
+ * 字数不多但二三十行竖着刷屏（2026-11-23 群内实测讲故事被指「太刷了」），
+ * 光看字数拦不住，必须同时看行数。
  */
 function quoteEntitiesFor(text) {
-if (!text || text.length < QUOTE_MIN_LENGTH) return undefined;
+if (!text) return undefined;
+if (text.length < QUOTE_MIN_LENGTH && text.split("\n").length <= QUOTE_MIN_LINES) return undefined;
 return [new Api.MessageEntityBlockquote({ offset: 0, length: text.length, collapsed: true })];
 }
 
@@ -1764,7 +1770,12 @@ return out;
       }
       return;
     }
-    await editPlaceholderText(msg.peerId, placeholder.id, parts[0].slice(0, TG_MESSAGE_LIMIT));
+    await editPlaceholderText(
+      msg.peerId,
+      placeholder.id,
+      parts[0].slice(0, TG_MESSAGE_LIMIT),
+      parts[0].length <= TG_MESSAGE_LIMIT ? quoteEntitiesFor(parts[0]) : undefined,
+    );
     for (let i = 1; i < parts.length; i++) {
       const delay =
         deps.splitDelayMs !== undefined && deps.splitDelayMs !== null
@@ -1772,10 +1783,15 @@ return out;
           : 400 + Math.random() * 300;
       if (delay > 0) await sleepFn(delay);
       let restPart = parts[i];
+      // 分条同样要折叠：尾条合并了剩余全部行数时行数爆表，整条能装下一条消息才折，
+      // 真要分片的条不折（同单条路径的理由，只折第一片会把后文藏错地方）。
+      const partEntities = restPart.length <= TG_MESSAGE_LIMIT ? quoteEntitiesFor(restPart) : undefined;
+      let firstChunk = true;
       while (restPart.length > 0) {
         const chunk = restPart.slice(0, TG_MESSAGE_LIMIT);
         restPart = restPart.slice(TG_MESSAGE_LIMIT);
-        await sendToPeer(msg.peerId, { message: chunk, replyTo: msg.id });
+        await sendToPeer(msg.peerId, { message: chunk, replyTo: msg.id, formattingEntities: firstChunk ? partEntities : undefined });
+        firstChunk = false;
       }
     }
   }
