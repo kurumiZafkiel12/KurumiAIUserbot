@@ -714,68 +714,19 @@ logger.error(`后台整理异常（chat=${chatId}）：${err.message}`),
 }
 }
 
-/** 区域代码 → 中文名（子域名前缀与国家域名后缀共用）。 */
-const REGION_NAMES = {
-hk: "香港", tw: "台湾", jp: "日本", sg: "新加坡", kr: "韩国", cn: "中国",
-us: "美国", uk: "英国", gb: "英国", de: "德国", fr: "法国", nl: "荷兰",
-in: "印度", au: "澳大利亚", ca: "加拿大", ru: "俄罗斯", br: "巴西",
-eu: "欧洲", vn: "越南", th: "泰国", my: "马来西亚", id: "印尼", ph: "菲律宾",
-};
-
-/** 知名提供方域名 → 区域（域名本身看不出区域时，按运营主体所在地标）。 */
-const KNOWN_PROVIDER_REGIONS = [
-["deepseek.com", "中国"],
-["openai.com", "美国"],
-["anthropic.com", "美国"],
-["x.ai", "美国"],
-["googleapis.com", "美国"],
-["mistral.ai", "法国"],
-["moonshot.cn", "中国"],
-["bigmodel.cn", "中国"],
-["aliyuncs.com", "中国"],
-["volces.com", "中国"],
-["siliconflow.cn", "中国"],
-["baidubce.com", "中国"],
-["minimax.chat", "中国"],
-];
-
-/**
- * 从 baseURL 推断 API 区域（提供方列表标注用，号主要求一眼看出哪个区域的 API）：
- * 先看子域名前缀（hk.tokennova.cc 这类中转站标法），再查知名提供方域名，
- * 最后看国家域名后缀；都推不出返回空串（列表就不标）。只是标注参考，不参与路由。
- */
-function regionLabelFor(baseURL) {
-let host = "";
-try {
-host = new URL(String(baseURL || "")).hostname.toLowerCase();
-} catch {
-return "";
-}
-if (!host) return "";
-const labels = host.split(".").filter(Boolean);
-if (labels.length >= 3) {
-const r = REGION_NAMES[labels[0]];
-if (r) return r;
-}
-for (const [domain, region] of KNOWN_PROVIDER_REGIONS) {
-if (host === domain || host.endsWith(`.${domain}`)) return region;
-}
-const tld = labels[labels.length - 1];
-if (tld && tld.length === 2 && REGION_NAMES[tld]) return REGION_NAMES[tld];
-return "";
-}
-
 /** 提供方编号列表（查看api 与两步选择共用）。只含名字/模型/地址/状态/用量，绝不含 key。 */
 function providerListText() {
+const visionNames = new Set(flattenVisionPool(config.visionPool).map((it) => it.apiName));
 return pool.entries
 .map((e, i) => {
 const s = e.counter.snapshot();
 const limitText = s.limit > 0? `${s.count}/${s.limit}`: `${s.count}/不限`;
 const status = e.disabled? "禁用": e.cooldownUntil > Date.now()? "冷却中": "启用";
-const kindTag = e.image? "（生图）": "";
-const region = regionLabelFor(e.baseURL);
-const regionTag = region? ` | 区域：${region}`: "";
-return `${i + 1}. ${e.name} | 模型：${e.model} | 地址：${e.baseURL}${regionTag} | 状态：${status}${kindTag} | 今日：${limitText}`;
+// 类型标注（号主定版：标的是每个 API 干啥的——生图、聊天这种）：生图提供方只生图；
+// 其余是聊天，被识图池引用的同时兼识图。以前只有生图在状态里带个括号、聊天没标，
+// 一眼看不出谁是谁，现统一成独立的「类型：」段，人人有份。
+const kindText = e.image? "生图": visionNames.has(e.name)? "聊天、识图": "聊天";
+return `${i + 1}. ${e.name} | 类型：${kindText} | 模型：${e.model} | 地址：${e.baseURL} | 状态：${status} | 今日：${limitText}`;
 })
 .join("\n");
 }
