@@ -45,8 +45,9 @@ export function decideSplit(text, options = {}) {
   const lines = t.split("\n").map((s) => s.trim()).filter(Boolean);
   if (lines.length < 2) return [t];
   if (lines.some((ln) => ln.length > MAX_PART_LENGTH)) return [t];
-  if (lines.length <= MAX_SPLIT_PARTS) return lines;
-  const head = lines.slice(0, MAX_SPLIT_PARTS - 1);
-  const tail = lines.slice(MAX_SPLIT_PARTS - 1).join("\n");
+  const maxParts = Math.max(2, Math.min(MAX_SPLIT_PARTS, Number(options.maxParts) || MAX_SPLIT_PARTS));
+  if (lines.length <= maxParts) return lines;
+  const head = lines.slice(0, maxParts - 1);
+  const tail = lines.slice(maxParts - 1).join("\n");
   return [...head, tail];
 }

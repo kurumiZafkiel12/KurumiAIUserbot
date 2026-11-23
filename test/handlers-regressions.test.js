@@ -817,3 +817,25 @@ test("v0.9.25 单条多行短文也按行数折叠，行数不多的不折", asy
   const quoted2 = few.edits.filter((e) => (e.formattingEntities || []).some((x) => x.collapsed === true));
   assert.equal(quoted2.length, 0, "3 行不折叠");
 });
+
+test("0.0.1 群里分条最多 3 条且后续条不带引用，私聊仍 5 条", async () => {
+  const story = Array.from({ length: 6 }, (_, i) => `第${i + 1}行小故事`).join("\n");
+  const g = fixture({
+    config: { systemPrompt: "自定义人设。", systemPromptIsDefault: false },
+    answer: story,
+  });
+  await g.handler(g.event("@mybot 讲个故事", { sender: "999", group: true }));
+  const gParts = g.sends.filter((s) => s.message.includes("小故事"));
+  assert.equal(gParts.length, 2, "群里补发 2 条（加占位编辑共 3 条封顶）");
+  assert.ok(gParts.every((s) => s.replyTo === undefined), "后续条不带引用");
+  const gTail = gParts.find((s) => s.message.includes("第3行小故事"));
+  assert.ok(gTail && gTail.message.split("\n").length === 4, "群尾条应并入剩余 4 行");
+  const d = fixture({
+    config: { systemPrompt: "自定义人设。", systemPromptIsDefault: false },
+    answer: story,
+  });
+  await d.handler(d.event("讲个故事", { sender: "999" }));
+  const dParts = d.sends.filter((s) => s.message.includes("小故事"));
+  assert.equal(dParts.length, 4, "私聊补发 4 条（加占位编辑共 5 条）");
+  assert.ok(dParts.every((s) => s.replyTo === undefined), "私聊后续条同样不带引用");
+});

@@ -58,7 +58,7 @@ maskSearchKey,
 } from "./search.js";
 import { buildTtsRequest, pickVoiceName, cleanSpeechText, parseVoiceSwitch, voiceQueryKind} from "./tts.js";
 import { isImageGenRequest, extractImagePrompt, buildImageGenRequest, parseImageGenResponse} from "./imagegen.js";
-import { decideSplit} from "./split.js";
+import { decideSplit, MAX_SPLIT_PARTS } from "./split.js";
 import { composeClockName, currentHHMM} from "./nameclock.js";
 import { toolGate, TOOLS_PROMPT_NOTE, executeTool, extractTextToolCalls, stripTextToolCalls, directToolCommand } from "./tools.js";
 import { chatWithTools } from "./toolchat.js";
@@ -1756,8 +1756,14 @@ return out;
    * 占位消息编辑为第一条，其余逐条补发（带小延迟模拟打字）；专业长答与无人设时整条发，
    * 超长按 Telegram 上限分片。answer 必须是已脱敏的文本。
    */
+  /** 分条上限按场景分：私聊维持 5 条的活人感；群里 3 条封顶——每条都顶着引用块，
+   * 五条连发在群里就是刷屏（2026-11-24 茶话会实测，六行讲解被拆成五条被指刷屏）。 */
+  function splitMaxPartsFor(msg) {
+    return msg && (msg.peerId?.chatId || msg.peerId?.channelId) ? 3 : MAX_SPLIT_PARTS;
+  }
+
   async function sendAnswer(msg, placeholder, answer) {
-    const parts = decideSplit(answer, { personaMode: isPersonaMode() });
+    const parts = decideSplit(answer, { personaMode: isPersonaMode(), maxParts: splitMaxPartsFor(msg) });
     if (parts.length <= 1) {
       // 整条答案只占一条消息且够长时，折叠成可展开引用，避免长文刷屏；要分片的长答不折（只折第一片会把后文藏错地方）。
       const quoteEntities = answer.length <= TG_MESSAGE_LIMIT ? quoteEntitiesFor(answer) : undefined;
@@ -1790,7 +1796,9 @@ return out;
       while (restPart.length > 0) {
         const chunk = restPart.slice(0, TG_MESSAGE_LIMIT);
         restPart = restPart.slice(TG_MESSAGE_LIMIT);
-        await sendToPeer(msg.peerId, { message: chunk, replyTo: msg.id, formattingEntities: firstChunk ? partEntities : undefined });
+        // 后续条不再逐条引用原问题：第一条（占位编辑）已经挂了引用，后面每条再顶着
+        // 一整块引用，视觉体积翻倍、群里更像刷屏（2026-11-24 实测教训）。
+        await sendToPeer(msg.peerId, { message: chunk, formattingEntities: firstChunk ? partEntities : undefined });
         firstChunk = false;
       }
     }
@@ -2395,7 +2403,7 @@ return out;
     streamClosed = true;
     finalGen = ++editGen;
     {
-      const finalParts = decideSplit(clean, { personaMode: isPersonaMode() });
+      const finalParts = decideSplit(clean, { personaMode: isPersonaMode(), maxParts: splitMaxPartsFor(msg) });
       finalPlaceholderText = (finalParts.length <= 1 ? clean : finalParts[0]).slice(0, TG_MESSAGE_LIMIT);
     }
 

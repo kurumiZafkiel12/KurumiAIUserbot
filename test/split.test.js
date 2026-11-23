@@ -51,3 +51,11 @@ test("某一行特别长时不拆", () => {
   const text = `短句\n${long}`;
   assert.deepEqual(decideSplit(text, { personaMode: true }), [text]);
 });
+
+test("0.0.1 decideSplit maxParts：上限 3 条时六行并为三条，缺省仍是五条", () => {
+const text = ["第一行", "第二行", "第三行", "第四行", "第五行", "第六行"].join("\n");
+assert.equal(decideSplit(text, { personaMode: true }).length, 5);
+const grp = decideSplit(text, { personaMode: true, maxParts: 3 });
+assert.equal(grp.length, 3);
+assert.equal(grp[2], "第三行\n第四行\n第五行\n第六行");
+});
