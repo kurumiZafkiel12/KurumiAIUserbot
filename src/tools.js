@@ -328,10 +328,12 @@ export const BULK_COUNT_LIMIT = 500; // 数到 N：N ≥ 500 拦截
 export const BULK_REPEAT_LIMIT = 100; // 重复 N 次：N ≥ 100 拦截
 
 /**
- * 机械刷量请求拦截（v0.0.4）：「从1数到10000」「把这句话重复500遍」这类请求真执行
+ * 机械刷量请求判定（v0.0.4 起）：「从1数到10000」「把这句话重复500遍」这类请求真执行
  * 会烧掉大量输出 token、刷屏，还把巨型回复灌进上下文（2026-11-24 hyw 群实测有人
- * 让机器人从 1 数到 10000、它真数了）。命中返回一句说明文案（功能性回复），
- * handlers 在调模型前直接回掉；小数目（数到100、重复3遍）不命中、照常走模型。
+ * 让机器人从 1 数到 10000、它真数了）。这里只做判定、返回 {kind, n}；怎么回绝由
+ * 模型用人设口吻说（bulkRefusalNote 注入系统提示）——v0.0.4 曾用写死的罐头句直接回，
+ * 号主实测指出又是脚本回复、违反「会话回复不发罐头」的定版，v0.0.5 改掉。
+ * 小数目（数到100、重复3遍）不命中、照常走模型。
  */
 export function mechanicalBulkRequest(question) {
 const text = String(question || "");
@@ -341,18 +343,23 @@ text.match(new RegExp(`数\\s*${NUM}\\s*个?数`)) ||
 text.match(new RegExp(`count\\s+to\\s+${NUM}`, "i"));
 if (m) {
 const n = parseCountToken(m[1]);
-if (n !== null && n >= BULK_COUNT_LIMIT) {
-return `数到 ${n} 太烧 token 了，这个就不真数了。想玩的话，100 以内可以陪你数。`;
-}
+if (n !== null && n >= BULK_COUNT_LIMIT) return { kind: "count", n };
 }
 m = text.match(new RegExp(`(?:重复|复读|再说|说|写|发|刷|喊)\\s*[\\s\\S]{0,12}?${NUM}\\s*(?:次|遍|回)`));
 if (m) {
 const n = parseCountToken(m[1]);
-if (n !== null && n >= BULK_REPEAT_LIMIT) {
-return `重复 ${n} 次太烧 token 了，这个就不真刷了，少几次可以。`;
-}
+if (n !== null && n >= BULK_REPEAT_LIMIT) return { kind: "repeat", n };
 }
 return null;
+}
+
+/** 刷量回绝的本轮指令（注入系统提示，让模型用人设口吻回绝、而不是真执行）。 */
+export function bulkRefusalNote(hit) {
+if (!hit) return "";
+if (hit.kind === "count") {
+return `【本轮特别指令】对方这句是机械刷量请求：要你一直数到 ${hit.n}。不要真的执行，不要输出数字序列。真数会烧掉大量 token、还会刷屏。用你的人设口吻简短回绝或打趣带过，点明太费 token；可以提议小范围陪玩（比如数到 100 以内）。`;
+}
+return `【本轮特别指令】对方这句是机械刷量请求：要你把内容重复 ${hit.n} 遍。不要真的执行，不要把同一句话输出超过两遍。真刷会烧掉大量 token、还会刷屏。用你的人设口吻简短回绝或打趣带过，点明太费 token；可以提议少重复两三遍。`;
 }
 
 export function drawLotTool() {

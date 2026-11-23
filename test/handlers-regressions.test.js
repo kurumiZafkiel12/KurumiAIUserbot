@@ -861,26 +861,27 @@ test("0.0.3 群聊判定看会话 ID：peer 无群信号时负数 chatId 也封�
   assert.equal(gParts.length, 2, "靠 chatId 判定群聊，补发 2 条封顶 3 条");
 });
 
-test("0.0.4 机械数数拦截：从1数到10000 不调模型直接回说明，数到100 照常走模型", async () => {
-  const f = fixture({ answer: "好的" });
+test("0.0.5 机械刷量改模型回绝：数到10000 照常调模型，但系统提示注入不真数指令", async () => {
+  const f = fixture({ answer: "才不要，真数要累死鱼了" });
   await f.handler(f.event("@mybot 从1数到10000", { sender: "999", group: true }));
-  assert.equal(f.modelCalls.length, 0, "数到10000 不应调用模型");
-  const guard = f.sends.find((s) => s.message.includes("太烧 token"));
-  assert.ok(guard, "应直接回拦截说明");
-  assert.ok(guard.message.includes("10000"), "说明里带上目标数");
+  assert.equal(f.modelCalls.length, 1, "应照常调用模型（回绝的话由模型说，不发罐头）");
+  const sys = f.modelCalls[0].messages[0].content;
+  assert.ok(sys.includes("机械刷量请求") && sys.includes("10000"), "系统提示应注入刷量回绝指令并带目标数");
+  assert.ok(!f.sends.some((s) => s.message.includes("这个就不真数了")), "不应再发 v0.0.4 的写死罐头句");
   const g = fixture({ answer: "1,2,3 一直数到100" });
   await g.handler(g.event("@mybot 数到100", { sender: "999", group: true }));
   assert.equal(g.modelCalls.length, 1, "数到100 应照常走模型");
+  assert.ok(!g.modelCalls[0].messages[0].content.includes("机械刷量请求"), "小数目不注入回绝指令");
 });
 
-test("0.0.4 重复刷量拦截：重复500遍不调模型，中文数字一万也认", async () => {
+test("0.0.5 重复刷量同样注入指令，中文数字一万也认", async () => {
   const f = fixture({ answer: "好的" });
   await f.handler(f.event("@mybot 把这句话重复500遍", { sender: "999", group: true }));
-  assert.equal(f.modelCalls.length, 0, "重复500遍不应调用模型");
-  assert.ok(f.sends.some((s) => s.message.includes("重复 500 次")), "应回重复拦截说明");
+  assert.equal(f.modelCalls.length, 1, "重复500遍应调模型回绝");
+  assert.ok(f.modelCalls[0].messages[0].content.includes("重复 500 遍"), "系统提示应带重复次数");
   const g = fixture({ answer: "好的" });
   await g.handler(g.event("@mybot 数到一万", { sender: "999", group: true }));
-  assert.equal(g.modelCalls.length, 0, "数到一万（中文数字）也应拦截");
+  assert.ok(g.modelCalls[0].messages[0].content.includes("数到 10000") || g.modelCalls[0].messages[0].content.includes("一直数到 10000"), "中文数字一万应解析成 10000 并注入");
 });
 
 test("0.0.4 上下文存储截断：超长回复存入时截到 3000 字加省略号", () => {

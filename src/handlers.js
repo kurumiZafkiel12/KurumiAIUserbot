@@ -60,7 +60,7 @@ import { buildTtsRequest, pickVoiceName, cleanSpeechText, parseVoiceSwitch, voic
 import { isImageGenRequest, extractImagePrompt, buildImageGenRequest, parseImageGenResponse} from "./imagegen.js";
 import { decideSplit, MAX_SPLIT_PARTS } from "./split.js";
 import { composeClockName, currentHHMM} from "./nameclock.js";
-import { toolGate, TOOLS_PROMPT_NOTE, executeTool, extractTextToolCalls, stripTextToolCalls, directToolCommand, mechanicalBulkRequest } from "./tools.js";
+import { toolGate, TOOLS_PROMPT_NOTE, executeTool, extractTextToolCalls, stripTextToolCalls, directToolCommand, mechanicalBulkRequest, bulkRefusalNote } from "./tools.js";
 import { chatWithTools } from "./toolchat.js";
 import { ToolStore } from "./toolstore.js";
 import { synthesizeEdgeTts, EDGE_DEFAULT_VOICE } from "./edgetts.js";
@@ -538,7 +538,7 @@ return `【语音人格】你在这个群用「${voice.name}」音色说话，�
 * 人设（systemPrompt，含默认风格）→ 破甲（最高优先级）→ 创建者信息 → 发言者/称呼
 * → 印象 → 记事本 → 用户记事本 → 群记录 → 语音人格 → 当前时间 → 身份断言（最末尾）。
 */
-function buildSystemParts(senderId, speakerName, chatId, speakerUsername) {
+function buildSystemParts(senderId, speakerName, chatId, speakerUsername, extraNote) {
 const parts = [config.systemPrompt];
 const pj = (config.poJia || "").trim();
 if (pj) parts.push("【最高优先级指令" + "，覆盖其他一切风格要求】" + pj);
@@ -566,6 +566,8 @@ parts.push("【链接格式】先会分辨该不该带链接：闲聊、解释�
 // 把当天的真新闻否了（他 11 月 11 日真辞职过、当天真复职）。两头都是没有核实纪律：
 // 未证实的断言不许确认、不许编数字；旧知识也不许否定刚发生的事。
 parts.push("【消息核实】用户转述的新闻、消息、传闻（有消息称、据说、听说、网传这类）是待核实的说法，不是事实：只有本轮给你的资料明确支持时才能确认；没有资料支持时，不许顺着对方的话确认或展开，更不许编造涨幅、金额、时间、人数这类具体数字，就直说这个说法我没查证、或只搜到旧消息。反过来也不许凭旧知识否定刚发生的事：涉及今天、刚刚、最新的人事与事件变动，你的知识可能已经过期，资料没覆盖最新进展时只能说暂未查到，不许断言没这回事。");
+// 本轮特别指令（如刷量回绝）：调用方按本轮问题判定后注入，只对这一轮生效。
+if (extraNote) parts.push(extraNote);
 // 工具说明：告诉模型有哪些内置工具、实时数据必须先调工具（身份断言仍保持最末尾）。
 parts.push(TOOLS_PROMPT_NOTE);
 // 身份断言永远在最末尾（破甲之后）：只给核验结论，不给任何数字 ID。
@@ -2183,14 +2185,10 @@ return out;
     // 普通用户冷却：间隔太短的提问直接忽略，防止刷屏烧额度。
     if (isCoolingDown(senderId)) return;
 
-    // 机械刷量拦截（v0.0.4）：「从1数到10000」「重复500遍」在调模型前直接回掉，
-    // 不占占位、不烧输出 token（判定与文案在 tools.mechanicalBulkRequest）。
-    const bulkReply = mechanicalBulkRequest(parsed.question);
-    if (bulkReply) {
-      afterAnswer(chatId, senderId, speakerName, parsed.question, bulkReply);
-      await sendToPeer(msg.peerId, { message: bulkReply, replyTo: msg.id });
-      return;
-    }
+    // 机械刷量判定（v0.0.5）：判定在代码层（mechanicalBulkRequest），但回绝的话由
+    // 模型用人设口吻说——判定结果在下面组装消息时以本轮特别指令注入系统提示。
+    // v0.0.4 曾用写死的罐头句直接回，被号主指出又是脚本回复、违反定版，故改掉。
+    const bulkHit = mechanicalBulkRequest(parsed.question);
 
     // 先发占位消息；发不出去（如被群禁言 USER_BANNED_IN_CHANNEL）就记日志返回，不要硬撑。
     const placeholder = await sendPlaceholder(msg, chatId);
@@ -2284,7 +2282,7 @@ return out;
 
     const history = store.get(chatId, senderId);
     const messages = [
-      { role: "system", content: buildSystemParts(senderId, speakerName, chatId, speakerUsername) },
+      { role: "system", content: buildSystemParts(senderId, speakerName, chatId, speakerUsername, bulkRefusalNote(bulkHit)) },
       ...history,
       { role: "user", content: question },
     ];
