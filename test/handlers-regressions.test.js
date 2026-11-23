@@ -826,7 +826,7 @@ test("v0.9.25 单条多行短文也按行数折叠，行数不多的不折", asy
   assert.equal(quoted2.length, 0, "3 行不折叠");
 });
 
-test("0.0.1 群里分条最多 3 条且后续条不带引用，私聊仍 5 条", async () => {
+test("0.0.3 群里分条最多 3 条且每条都带引用，私聊仍 5 条", async () => {
   const story = Array.from({ length: 6 }, (_, i) => `第${i + 1}行小故事`).join("\n");
   const g = fixture({
     config: { systemPrompt: "自定义人设。", systemPromptIsDefault: false },
@@ -835,7 +835,7 @@ test("0.0.1 群里分条最多 3 条且后续条不带引用，私聊仍 5 条",
   await g.handler(g.event("@mybot 讲个故事", { sender: "999", group: true }));
   const gParts = g.sends.filter((s) => s.message.includes("小故事"));
   assert.equal(gParts.length, 2, "群里补发 2 条（加占位编辑共 3 条封顶）");
-  assert.ok(gParts.every((s) => s.replyTo === undefined), "后续条不带引用");
+  assert.ok(gParts.every((s) => s.replyTo === 10), "后续条带引用（v0.0.3 恢复）");
   const gTail = gParts.find((s) => s.message.includes("第3行小故事"));
   assert.ok(gTail && gTail.message.split("\n").length === 4, "群尾条应并入剩余 4 行");
   const d = fixture({
@@ -845,7 +845,20 @@ test("0.0.1 群里分条最多 3 条且后续条不带引用，私聊仍 5 条",
   await d.handler(d.event("讲个故事", { sender: "999" }));
   const dParts = d.sends.filter((s) => s.message.includes("小故事"));
   assert.equal(dParts.length, 4, "私聊补发 4 条（加占位编辑共 5 条）");
-  assert.ok(dParts.every((s) => s.replyTo === undefined), "私聊后续条同样不带引用");
+  assert.ok(dParts.every((s) => s.replyTo === 10), "私聊后续条同样带引用");
+});
+
+test("0.0.3 群聊判定看会话 ID：peer 无群信号时负数 chatId 也封顶 3 条", async () => {
+  const story = Array.from({ length: 6 }, (_, i) => `第${i + 1}行小故事`).join("\n");
+  const g = fixture({
+    config: { systemPrompt: "自定义人设。", systemPromptIsDefault: false },
+    answer: story,
+  });
+  const ev = g.event("@mybot 讲个故事", { sender: "999", group: true });
+  ev.message.peerId = {}; // 模拟生产里 peer 结构判不出群的情况，只剩 chatId 是负数
+  await g.handler(ev);
+  const gParts = g.sends.filter((s) => s.message.includes("小故事"));
+  assert.equal(gParts.length, 2, "靠 chatId 判定群聊，补发 2 条封顶 3 条");
 });
 
 test("0.0.2 提供方列表标注类型：聊天/生图/识图人人有份，不标地理区域", async () => {

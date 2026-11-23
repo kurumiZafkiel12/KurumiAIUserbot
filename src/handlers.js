@@ -1762,12 +1762,15 @@ return out;
    */
   /** 分条上限按场景分：私聊维持 5 条的活人感；群里 3 条封顶——每条都顶着引用块，
    * 五条连发在群里就是刷屏（2026-11-24 茶话会实测，六行讲解被拆成五条被指刷屏）。 */
-  function splitMaxPartsFor(msg) {
+  function splitMaxPartsFor(msg, chatId) {
+    // 群聊判定以会话 ID 为准：群/频道的会话 ID 是负数。只看 peer 结构在生产里偶发判不出
+    // （v0.0.2 实测：茶话会里分条上限没生效、发了 5 条），故 peer 只作兜底信号。
+    if (chatId != null && String(chatId).startsWith("-")) return 3;
     return msg && (msg.peerId?.chatId || msg.peerId?.channelId) ? 3 : MAX_SPLIT_PARTS;
   }
 
-  async function sendAnswer(msg, placeholder, answer) {
-    const parts = decideSplit(answer, { personaMode: isPersonaMode(), maxParts: splitMaxPartsFor(msg) });
+  async function sendAnswer(msg, placeholder, answer, chatId) {
+    const parts = decideSplit(answer, { personaMode: isPersonaMode(), maxParts: splitMaxPartsFor(msg, chatId) });
     if (parts.length <= 1) {
       // 整条答案只占一条消息且够长时，折叠成可展开引用，避免长文刷屏；要分片的长答不折（只折第一片会把后文藏错地方）。
       const quoteEntities = answer.length <= TG_MESSAGE_LIMIT ? quoteEntitiesFor(answer) : undefined;
@@ -1800,9 +1803,9 @@ return out;
       while (restPart.length > 0) {
         const chunk = restPart.slice(0, TG_MESSAGE_LIMIT);
         restPart = restPart.slice(TG_MESSAGE_LIMIT);
-        // 后续条不再逐条引用原问题：第一条（占位编辑）已经挂了引用，后面每条再顶着
-        // 一整块引用，视觉体积翻倍、群里更像刷屏（2026-11-24 实测教训）。
-        await sendToPeer(msg.peerId, { message: chunk, formattingEntities: firstChunk ? partEntities : undefined });
+        // 每条都带引用（v0.0.3 恢复）：v0.0.1 去掉后续条引用后，群里刷得快时
+        // 后续条被别人的消息冲散、没人看得出在回谁（号主实测反馈），故恢复。
+        await sendToPeer(msg.peerId, { message: chunk, replyTo: msg.id, formattingEntities: firstChunk ? partEntities : undefined });
         firstChunk = false;
       }
     }
@@ -1975,7 +1978,7 @@ return out;
     const clean = scrubSecrets(answer, collectSecrets(config));
     afterAnswer(chatId, senderId, speakerName, question, clean);
     try {
-      await sendAnswer(msg, placeholder, clean);
+      await sendAnswer(msg, placeholder, clean, chatId);
     } catch (err) {
       logger.error(`发送识图答案失败（chat=${chatId}）：${err.message}`);
     }
@@ -2428,7 +2431,7 @@ return out;
     streamClosed = true;
     finalGen = ++editGen;
     {
-      const finalParts = decideSplit(clean, { personaMode: isPersonaMode(), maxParts: splitMaxPartsFor(msg) });
+      const finalParts = decideSplit(clean, { personaMode: isPersonaMode(), maxParts: splitMaxPartsFor(msg, chatId) });
       finalPlaceholderText = (finalParts.length <= 1 ? clean : finalParts[0]).slice(0, TG_MESSAGE_LIMIT);
     }
 
@@ -2437,7 +2440,7 @@ return out;
 
     // 最终答案：人设模式闲聊分条发、其余整条发（sendAnswer 内部判定）。
     try {
-      await sendAnswer(msg, placeholder, clean);
+      await sendAnswer(msg, placeholder, clean, chatId);
     } catch (err) {
       logger.error(`发送最终答案失败（chat=${chatId}，模型=${usedEntry.name}）：${err.message}`);
     }
