@@ -861,6 +861,14 @@ test("0.0.3 群聊判定看会话 ID：peer 无群信号时负数 chatId 也封�
   assert.equal(gParts.length, 2, "靠 chatId 判定群聊，补发 2 条封顶 3 条");
 });
 
+test("0.0.8 群里 @机器人+中文逗号+/ai 账单：走号主账单，不掉进模型聊天", async () => {
+  const f = fixture();
+  await f.handler(f.event("@mybot，/ai 账单", { group: true }));
+  const all = f.sends.map((m) => m.message).join("\n");
+  assert.match(all, /账单（/);
+  assert.equal(f.modelCalls.length, 0, "命令不得走模型");
+});
+
 test("0.0.7 加识图api 分步：名字→地址→key→列表挑模型，存为识图专用并实测通过", async () => {
   const stubClient = {
     models: { list: async () => ({ data: [{ id: "gemini-3-flash-preview" }, { id: "some-text-model" }] }) },

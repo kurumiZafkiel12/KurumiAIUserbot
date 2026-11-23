@@ -40,7 +40,14 @@ export function parseTrigger(text, options = {}) {
   // 用户名触发被号主关掉时，普通用户的提及不算触发。
   const mentionBlocked = usernameTrigger === false && role === "user";
   if (mention && !mentionBlocked && mentionRegex(username).test(text)) {
-    const question = text.replace(mentionRegex(username, true), " ").replace(/\s+/g, " ").trim();
+    // 剥掉提及后，紧跟提及的逗号/冒号多半只是说话习惯（「@bot，帮我看看」），
+    // 留在问题开头会让公开命令的精确匹配（question === "/ai 账单"）落空。
+    const question = text
+      .replace(mentionRegex(username, true), " ")
+      .replace(/\s+/g, " ")
+      .trim()
+      .replace(/^[，,、：:；;]+/, "")
+      .trim();
     return {
       kind: "mention",
       trigger: mention,
@@ -98,7 +105,9 @@ export function parseMentionOwnerCommand(text, username) {
   const trimmed = text.trimStart();
   const m = new RegExp(`^${mentionRegex(username).source}`, "i").exec(trimmed);
   if (!m) return null;
-  const rest = trimmed.slice(m[0].length).trimStart();
+  // 提及后常跟一个逗号/冒号再接命令（「@bot，/ai 账单」，2026-11-24 茶话会实测）：
+  // 只剥空格的话余下文本以「，」开头、命令解析不中，会掉进普通聊天让模型乱答。
+  const rest = trimmed.slice(m[0].length).replace(/^[\s，,、：:；;]+/, "");
   return parseOwnerCommand(rest);
 }
 

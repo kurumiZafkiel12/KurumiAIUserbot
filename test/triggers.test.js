@@ -149,6 +149,19 @@ test("parseMentionOwnerCommand：群里 @机器人 后接 /ai 命令能解析出
   assert.equal(parseMentionOwnerCommand("  @mybot /ai 拉黑 123", "mybot"), "拉黑 123");
 });
 
+test("parseMentionOwnerCommand：提及后跟逗号/冒号再接命令也能解析（v0.0.8）", () => {
+  assert.equal(parseMentionOwnerCommand("@mybot，/ai 账单", "mybot"), "账单");
+  assert.equal(parseMentionOwnerCommand("@mybot：/ai 状态", "mybot"), "状态");
+  assert.equal(parseMentionOwnerCommand("@mybot,/ai 帮助", "mybot"), "帮助");
+  assert.equal(parseMentionOwnerCommand("@mybot， /ai 拉黑 123", "mybot"), "拉黑 123");
+});
+
+test("parseTrigger：提及后的开头逗号不留在问题里（v0.0.8）", () => {
+  assert.equal(parseTrigger("@mybot，/ai 账单", OPTS).question, "/ai 账单");
+  assert.equal(parseTrigger("@mybot，帮我看看", OPTS).question, "帮我看看");
+  assert.equal(parseTrigger("@mybot：今天星期几", OPTS).question, "今天星期几");
+});
+
 test("parseMentionOwnerCommand：不是命令形态一律返回 null", () => {
   assert.equal(parseMentionOwnerCommand("@mybot 你好", "mybot"), null); // 普通提问
   assert.equal(parseMentionOwnerCommand("@mybot @ai 状态", "mybot"), null); // @ai 不是命令前缀
@@ -156,4 +169,25 @@ test("parseMentionOwnerCommand：不是命令形态一律返回 null", () => {
   assert.equal(parseMentionOwnerCommand("喂 @mybot /ai 状态", "mybot"), null); // 提及不在开头
   assert.equal(parseMentionOwnerCommand("@other /ai 状态", "mybot"), null); // 提及的不是机器人
   assert.equal(parseMentionOwnerCommand("@mybot /ai 状态", ""), null); // 没配用户名
+});
+
+test("用户名是别人用户名的前缀时不误触发（v0.9.5）", () => {
+  assert.equal(parseTrigger("@mybot2 你好", OPTS), null);
+  assert.equal(parseTrigger("@mybot_2 你好", OPTS), null);
+  assert.equal(parseTrigger("帮我问下 @mybot2 在吗", OPTS), null);
+  const r = parseTrigger("@mybot，在吗", OPTS);
+  assert.equal(r.kind, "mention");
+  // v0.0.8 起问题开头的逗号会被清掉（旧断言是「，在吗」，那正是命令匹配落空的根源）。
+  assert.equal(r.question, "在吗");
+});
+
+test("提及大小写不敏感（TG 用户名不分大小写，v0.9.5）", () => {
+  const r = parseTrigger("@MyBot 你好", OPTS);
+  assert.equal(r.kind, "mention");
+  assert.equal(r.question, "你好");
+});
+
+test("提及式号主命令：别人用户名前缀不误判（v0.9.5）", () => {
+  assert.equal(parseMentionOwnerCommand("@mybot2 /ai 状态", "mybot"), null);
+  assert.equal(parseMentionOwnerCommand("@mybot /ai 状态", "mybot"), "状态");
 });
