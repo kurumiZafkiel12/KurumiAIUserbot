@@ -81,3 +81,10 @@ test("parseImageGenResponse 认 b64/url/顶层 url/images 数组，都没有返�
   assert.equal(parseImageGenResponse({ data: [] }), null);
   assert.equal(parseImageGenResponse(null), null);
 });
+
+test("v0.9.22 「生产一张…实景照」也算生图，生产+非图像宾语不误触发", () => {
+assert.equal(isImageGenRequest("生产一张东方明珠的实景照，真实"), true);
+assert.equal(extractImagePrompt("生产一张东方明珠的实景照，真实"), "东方明珠的实景照，真实");
+assert.equal(isImageGenRequest("生产一个函数"), false);
+assert.equal(isImageGenRequest("生产线怎么升级"), false);
+});

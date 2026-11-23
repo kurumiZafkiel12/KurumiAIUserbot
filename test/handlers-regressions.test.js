@@ -731,3 +731,27 @@ test("v0.9.21 换模型支持生图提供方：列表里挑，只写 overrides �
   assert.match(all, /已把生图提供方「imgone」的模型换成 img-b/);
   assert.equal(f.modelCalls.length, 0);
 });
+
+test("v0.9.22 生图 502 自动重试一次后成功，占位符是（生图中...）", async () => {
+  let calls = 0;
+  const png = Buffer.alloc(600, 7).toString("base64");
+  const f = fixture({
+    config: {
+      providers: [
+        { name: "default", model: "mock-model", baseURL: "https://offline.invalid/v1", apiKey: "x", dailyLimit: 0 },
+        { name: "imgone", model: "img-a", baseURL: "https://img.invalid/v1", apiKey: "y", dailyLimit: 0, image: true },
+      ],
+    },
+    deps: {
+      fetchImpl: async () => {
+        calls += 1;
+        if (calls === 1) return { ok: false, status: 502, json: async () => ({}) };
+        return { ok: true, status: 200, json: async () => ({ data: [{ b64_json: png }] }) };
+      },
+    },
+  });
+  await f.handler(f.event("画一张 猫"));
+  assert.equal(calls, 2);
+  assert.equal(f.files.length, 1);
+  assert.ok(f.sends.some((m) => m.message === "（生图中...）"));
+});

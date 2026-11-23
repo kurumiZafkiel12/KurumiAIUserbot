@@ -1843,9 +1843,9 @@ return out;
   }
 
   /** 发占位消息；发不出去返回 null（调用方记日志收尾）。 */
-  async function sendPlaceholder(msg, chatId) {
+  async function sendPlaceholder(msg, chatId, text = PLACEHOLDER_TEXT) {
     try {
-      return await sendToPeer(msg.peerId, { message: PLACEHOLDER_TEXT, replyTo: msg.id });
+      return await sendToPeer(msg.peerId, { message: text, replyTo: msg.id });
     } catch (err) {
       logger.error(`发送占位消息失败（chat=${chatId}）：${err.message}`);
       return null;
@@ -1969,7 +1969,7 @@ return out;
       return;
     }
 
-    const placeholder = await sendPlaceholder(msg, chatId);
+    const placeholder = await sendPlaceholder(msg, chatId, "（生图中...）");
     if (!placeholder) {
       pool.release(provider);
       return;
@@ -1994,7 +1994,17 @@ return out;
     try {
       const def = (config.providers || []).find((p) => p && p.name === provider.name) || provider;
       const req = buildImageGenRequest(def, prompt);
-      const res = await fetchImpl(req.url, req.options);
+      let res = await fetchImpl(req.url, req.options).catch(() => null);
+      if (!res || !res.ok) {
+        const status = res ? res.status : 0;
+        if (!res || status >= 500) {
+          // 中转站偶发 502/网关无响应（2026-11-23 群内实测 tokennova 首发 502、
+          // 同参数直连却成功）：隔 3 秒自动重试一次，再失败才报给用户。
+          logger.error(`生图请求失败（${provider.name}）：HTTP ${status || "无响应"}，重试一次`);
+          await sleepFn(3000);
+          res = await fetchImpl(req.url, req.options).catch(() => null);
+        }
+      }
       if (!res || !res.ok) {
         logger.error(`生图请求失败（${provider.name}）：HTTP ${res ? res.status : "无响应"}`);
         return fail("生图失败了，接口暂时不可用，请稍后再试。");
