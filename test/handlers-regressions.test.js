@@ -777,7 +777,15 @@ test("v0.9.23 模型判定生图：正则没命中的说法经 generate_image �
   await f.handler(f.event("帮我生成一张东方明珠的夜景照片"));
   assert.ok(f.modelCalls.length >= 1, "应先经过模型判定");
   assert.equal(f.files.length, 1);
-  assert.ok(f.sends.some((m) => m.message === "（生图中...）"));
+  // 工具线复用聊天占位：只发一条「（思考中...）」，生图时把同一条改成「（生图中...）」，
+  // 不另发第二条占位；最终回复「画好了。」也编辑在同一条上，且排在生图之后（生完图再回）。
+  const ph = f.sends.find((m) => m.message === "（思考中...）");
+  assert.ok(ph, "应先发聊天占位");
+  assert.ok(!f.sends.some((m) => m.message === "（生图中...）"), "不应另发第二条生图占位");
+  const genIdx = f.edits.findIndex((e) => e.message === ph.id && e.text === "（生图中...）");
+  const ansIdx = f.edits.findIndex((e) => e.message === ph.id && e.text === "画好了。");
+  assert.ok(genIdx >= 0, "生图时应把聊天占位改成（生图中...）");
+  assert.ok(ansIdx > genIdx, "最终回复应落在同一条占位上、且在生图之后");
 });
 
 test("v0.9.24 系统提示含消息核实段：未证实不确认不编数字、旧知识不否定新事", async () => {

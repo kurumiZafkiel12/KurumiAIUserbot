@@ -2094,8 +2094,12 @@ return out;
   }
 
   /** generate_image 工具的执行端工厂：模型判定用户想生图时经 ctx 调用，流程与正则快线
-   * 一致（选提供方、冷却/名额闸门、生图中占位、生成、发图、结算），返回一句话结果给模型。 */
-  function makeImageGenToolImpl(msg, chatId, senderId, speakerName, question) {
+   * 一致（选提供方、冷却/名额闸门、生图中占位、生成、发图、结算），返回一句话结果给模型。
+   * chatPlaceholder 是聊天管线先发的「（思考中...）」占位：传了就把那一条直接改成
+   * 「（生图中...）」，不再另发第二条占位（2026-11-24 群内实测两条占位并排，号主问
+   * 「哪来的思考中」）；生成结束后不删不改它，最终回复由聊天管线编辑这同一条占位
+   * 落地——顺序天然就是生完图再回。没传占位时才自发一条（自发自删，同旧行为）。 */
+  function makeImageGenToolImpl(msg, chatId, senderId, speakerName, question, chatPlaceholder) {
     return async (prompt) => {
       const p = String(prompt || "").trim();
       if (!p) return "没给画面描述，没生成。";
@@ -2103,10 +2107,21 @@ return out;
       if (!provider) return "当前没有可用的生图 API，没法生成。请如实告诉用户：需要号主先用 /ai 加生图api 添加。";
       if (isCoolingDown(senderId)) return "用户操作太频繁、正在冷却中，这次没生成。";
       if (!pool.reserve(provider)) return "生图模型暂时不可用（已达每日上限或冷却中），这次没生成。";
-      const placeholder = await sendPlaceholder(msg, chatId, "（生图中...）");
-      if (!placeholder) {
-        pool.release(provider);
-        return "生图占位消息发送失败，这次没生成。";
+      let placeholder = chatPlaceholder || null;
+      let ownPlaceholder = false;
+      if (placeholder) {
+        try {
+          await client.editMessage(msg.peerId, { message: placeholder.id, text: "（生图中...）" });
+        } catch {
+          // 占位改不动就留着「思考中」，不影响生成本身。
+        }
+      } else {
+        placeholder = await sendPlaceholder(msg, chatId, "（生图中...）");
+        ownPlaceholder = true;
+        if (!placeholder) {
+          pool.release(provider);
+          return "生图占位消息发送失败，这次没生成。";
+        }
       }
       let settled = false;
       try {
@@ -2123,10 +2138,12 @@ return out;
             // 临时文件删不掉不影响主流程。
           }
         }
-        try {
-          await client.deleteMessages(msg.peerId, [placeholder.id], { revoke: true });
-        } catch {
-          // 占位删不掉就留着，不影响图片本身。
+        if (ownPlaceholder) {
+          try {
+            await client.deleteMessages(msg.peerId, [placeholder.id], { revoke: true });
+          } catch {
+            // 占位删不掉就留着，不影响图片本身。
+          }
         }
         pool.markSuccess(provider);
         settled = true;
@@ -2136,12 +2153,16 @@ return out;
       } catch (err) {
         if (!settled) pool.release(provider);
         logger.error(`生图失败（${provider.name}）：${err.message}`);
-        try {
-          await client.editMessage(msg.peerId, { message: placeholder.id, text: "生图失败了，请稍后再试。" });
-        } catch {
-          // 失败提示发不出不影响主流程。
+        if (ownPlaceholder) {
+          try {
+            await client.editMessage(msg.peerId, { message: placeholder.id, text: "生图失败了，请稍后再试。" });
+          } catch {
+            // 失败提示发不出不影响主流程。
+          }
+          return `生图失败了（${err.message}），已经在会话里发了失败提示。`;
         }
-        return `生图失败了（${err.message}），已经在会话里发了失败提示。`;
+        // 共用聊天占位时不抢着改它：最终回复（或全模型失败兜底）会编辑这条占位收尾。
+        return `生图失败了（${err.message}）。回复用户时如实说明失败，不要假装生成成功。`;
       }
     };
   }
@@ -2174,7 +2195,7 @@ return out;
     const directCmd = directToolCommand(question);
     if (directCmd) {
       try {
-        const directCtx = { chatId, senderId, senderName: speakerName, timezone: config.timezone, logger, outbox: [], store: toolStore, imageSearch: imageSearchImpl, imageGen: makeImageGenToolImpl(msg, chatId, senderId, speakerName, question), client };
+        const directCtx = { chatId, senderId, senderName: speakerName, timezone: config.timezone, logger, outbox: [], store: toolStore, imageSearch: imageSearchImpl, imageGen: makeImageGenToolImpl(msg, chatId, senderId, speakerName, question, placeholder), client };
         const directResult = await executeTool(directCmd.name, directCmd.args, directCtx);
         if (directResult) {
           const cleanDirect = scrubSecrets(String(directResult), collectSecrets(config));
@@ -2304,7 +2325,7 @@ return out;
           text = await chatWithTools(
             entry,
             messages,
-            { chatId, senderId, senderName: speakerName, timezone: config.timezone, logger, outbox: toolOutbox, store: toolStore, imageSearch: imageSearchImpl, imageGen: makeImageGenToolImpl(msg, chatId, senderId, speakerName, question), client },
+            { chatId, senderId, senderName: speakerName, timezone: config.timezone, logger, outbox: toolOutbox, store: toolStore, imageSearch: imageSearchImpl, imageGen: makeImageGenToolImpl(msg, chatId, senderId, speakerName, question, placeholder), client },
             (u) => {
               seenUsage = u;
             },
@@ -2358,7 +2379,7 @@ return out;
     {
       const leaked = extractTextToolCalls(answer);
       if (leaked.length > 0 && usedEntry) {
-        const toolCtx = { chatId, senderId, senderName: speakerName, timezone: config.timezone, logger, outbox: toolOutbox, store: toolStore, imageSearch: imageSearchImpl, imageGen: makeImageGenToolImpl(msg, chatId, senderId, speakerName, question), client };
+        const toolCtx = { chatId, senderId, senderName: speakerName, timezone: config.timezone, logger, outbox: toolOutbox, store: toolStore, imageSearch: imageSearchImpl, imageGen: makeImageGenToolImpl(msg, chatId, senderId, speakerName, question, placeholder), client };
         const resultLines = [];
         for (const call of leaked) {
           try {
