@@ -296,6 +296,65 @@ return { name: "flip_coin", args: { times: m[1]? Number(m[1]): 1 } };
 return null;
 }
 
+const CN_COUNT_DIGITS = { 零: 0, 一: 1, 二: 2, 两: 2, 三: 3, 四: 4, 五: 5, 六: 6, 七: 7, 八: 8, 九: 9 };
+
+/** 解析计数 token：阿拉伯数字（可带千分位逗号）或中文数字（一万、十万、一百二十三）。解析不了返回 null。 */
+export function parseCountToken(token) {
+const t = String(token || "").replace(/[,，\s]/g, "");
+if (/^\d+$/.test(t)) return parseInt(t, 10);
+if (!/^[零一二两三四五六七八九十百千万亿]+$/.test(t)) return null;
+let total = 0;
+let section = 0;
+let digit = 0;
+for (const ch of t) {
+if (ch in CN_COUNT_DIGITS) { digit = CN_COUNT_DIGITS[ch]; continue; }
+if (ch === "十" || ch === "百" || ch === "千") {
+const mult = ch === "十" ? 10 : ch === "百" ? 100 : 1000;
+section += (digit === 0 && ch === "十" ? 1 : digit) * mult;
+digit = 0;
+continue;
+}
+if (ch === "万" || ch === "亿") {
+section += digit;
+total += (section === 0 ? 1 : section) * (ch === "万" ? 10000 : 100000000);
+section = 0;
+digit = 0;
+}
+}
+return total + section + digit;
+}
+
+export const BULK_COUNT_LIMIT = 500; // 数到 N：N ≥ 500 拦截
+export const BULK_REPEAT_LIMIT = 100; // 重复 N 次：N ≥ 100 拦截
+
+/**
+ * 机械刷量请求拦截（v0.0.4）：「从1数到10000」「把这句话重复500遍」这类请求真执行
+ * 会烧掉大量输出 token、刷屏，还把巨型回复灌进上下文（2026-11-24 hyw 群实测有人
+ * 让机器人从 1 数到 10000、它真数了）。命中返回一句说明文案（功能性回复），
+ * handlers 在调模型前直接回掉；小数目（数到100、重复3遍）不命中、照常走模型。
+ */
+export function mechanicalBulkRequest(question) {
+const text = String(question || "");
+const NUM = "(\\d[\\d,，]*|[零一二两三四五六七八九十百千万亿]+)";
+let m = text.match(new RegExp(`数到\\s*${NUM}`)) ||
+text.match(new RegExp(`数\\s*${NUM}\\s*个?数`)) ||
+text.match(new RegExp(`count\\s+to\\s+${NUM}`, "i"));
+if (m) {
+const n = parseCountToken(m[1]);
+if (n !== null && n >= BULK_COUNT_LIMIT) {
+return `数到 ${n} 太烧 token 了，这个就不真数了。想玩的话，100 以内可以陪你数。`;
+}
+}
+m = text.match(new RegExp(`(?:重复|复读|再说|说|写|发|刷|喊)\\s*[\\s\\S]{0,12}?${NUM}\\s*(?:次|遍|回)`));
+if (m) {
+const n = parseCountToken(m[1]);
+if (n !== null && n >= BULK_REPEAT_LIMIT) {
+return `重复 ${n} 次太烧 token 了，这个就不真刷了，少几次可以。`;
+}
+}
+return null;
+}
+
 export function drawLotTool() {
 const lot = LOT_LEVELS[crypto.randomInt(LOT_LEVELS.length)];
 return `抽签结果：${lot.level}。签诗：${lot.verse}解曰：${lot.note}`;

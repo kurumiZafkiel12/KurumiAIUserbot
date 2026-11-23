@@ -7,6 +7,10 @@ import OpenAI from "openai";
 import { DailyCounter } from "./limits.js";
 
 const FAILURE_COOLDOWN_MS = 30_000;
+// 单次回复的输出 token 上限：没有上限时「从1数到10000」这类请求会一直生成到模型
+// 自身的硬顶，烧 token、刷屏、还污染上下文（2026-11-24 hyw 群实测）。4096 足够覆盖
+// 正常长答；接口不认 max_tokens 时 chat/visionChat 都会去掉它重试一次。
+const CHAT_MAX_OUTPUT_TOKENS = 4096;
 
 export class ProviderPool {
   /**
@@ -149,8 +153,15 @@ export class ProviderPool {
   /** 记一次失败：释放预留（失败不计用量），进入冷却期，并把错误留给日志/报告。 */
   markFailure(entry, err) {
     entry.counter.release();
-    entry.cooldownUntil = Date.now() + FAILURE_COOLDOWN_MS;
     entry.lastError = err && err.message ? err.message : String(err);
+    // 内容风控类拒绝（如 DeepSeek 的 400 Content Exists Risk）是这一条请求被拒、
+    // 不是提供方故障：进冷却会让唯一的提供方停摆 30 秒，旁人的正常消息跟着吃
+    // 「所有模型都暂时不可用」（2026-11-24 hyw 群实测），故这类只记错误、不冷却。
+    if (/content exists risk|content[_ ]?risk|moderation|content policy/i.test(entry.lastError)) {
+      this.logger.warn(`提供方 ${entry.name} 调用被内容风控拒绝（不进冷却）：${entry.lastError}`);
+      return;
+    }
+    entry.cooldownUntil = Date.now() + FAILURE_COOLDOWN_MS;
     this.logger.warn(`提供方 ${entry.name} 调用失败，进入 ${FAILURE_COOLDOWN_MS / 1000}s 冷却：${entry.lastError}`);
   }
 
@@ -178,8 +189,9 @@ export class ProviderPool {
    * @returns {Promise<string>} 完整回复文本
    */
   async chat(entry, messages, onToken, onUsage) {
-    const attempt = async (withUsageOption) => {
+    const attempt = async (withUsageOption, withCap = true) => {
       const params = { model: entry.model, messages, stream: true };
+      if (withCap) params.max_tokens = CHAT_MAX_OUTPUT_TOKENS;
       if (withUsageOption) params.stream_options = { include_usage: true };
       const stream = await entry.client.chat.completions.create(params);
       let full = "";
@@ -216,7 +228,15 @@ export class ProviderPool {
     } catch (err) {
       if (err && err.producedPartial) throw err;
       // 还没产出任何文本：多半是接口不认 stream_options，去掉选项重试一次。
-      return attempt(false);
+      try {
+        return await attempt(false);
+      } catch (err2) {
+        // 仍失败且像是接口不认 max_tokens：去掉输出上限再试一次（同样只限没吐过字）。
+        if (err2 && !err2.producedPartial && /max_tokens|max_completion_tokens/i.test(err2.message || "")) {
+          return attempt(false, false);
+        }
+        throw err2;
+      }
     }
   }
 
@@ -226,7 +246,14 @@ export class ProviderPool {
    * @returns {Promise<string>} 回复文本；usage 经 onUsage 回调带出（接口给的话）
    */
   async visionChat(entry, model, messages, onUsage) {
-    const res = await entry.client.chat.completions.create({ model, messages, stream: false });
+    let res;
+    try {
+      res = await entry.client.chat.completions.create({ model, messages, stream: false, max_tokens: CHAT_MAX_OUTPUT_TOKENS });
+    } catch (err) {
+      // 接口不认 max_tokens 时去掉上限重试一次（同 chat 的理由）。
+      if (!/max_tokens|max_completion_tokens/i.test((err && err.message) || "")) throw err;
+      res = await entry.client.chat.completions.create({ model, messages, stream: false });
+    }
     const text = (res && res.choices && res.choices[0] && res.choices[0].message && res.choices[0].message.content) || "";
     if (!String(text).trim()) throw new Error("识图模型返回了空内容");
     if (res.usage && onUsage) {

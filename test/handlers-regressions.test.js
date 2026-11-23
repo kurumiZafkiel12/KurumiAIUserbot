@@ -861,6 +861,38 @@ test("0.0.3 群聊判定看会话 ID：peer 无群信号时负数 chatId 也封�
   assert.equal(gParts.length, 2, "靠 chatId 判定群聊，补发 2 条封顶 3 条");
 });
 
+test("0.0.4 机械数数拦截：从1数到10000 不调模型直接回说明，数到100 照常走模型", async () => {
+  const f = fixture({ answer: "好的" });
+  await f.handler(f.event("@mybot 从1数到10000", { sender: "999", group: true }));
+  assert.equal(f.modelCalls.length, 0, "数到10000 不应调用模型");
+  const guard = f.sends.find((s) => s.message.includes("太烧 token"));
+  assert.ok(guard, "应直接回拦截说明");
+  assert.ok(guard.message.includes("10000"), "说明里带上目标数");
+  const g = fixture({ answer: "1,2,3 一直数到100" });
+  await g.handler(g.event("@mybot 数到100", { sender: "999", group: true }));
+  assert.equal(g.modelCalls.length, 1, "数到100 应照常走模型");
+});
+
+test("0.0.4 重复刷量拦截：重复500遍不调模型，中文数字一万也认", async () => {
+  const f = fixture({ answer: "好的" });
+  await f.handler(f.event("@mybot 把这句话重复500遍", { sender: "999", group: true }));
+  assert.equal(f.modelCalls.length, 0, "重复500遍不应调用模型");
+  assert.ok(f.sends.some((s) => s.message.includes("重复 500 次")), "应回重复拦截说明");
+  const g = fixture({ answer: "好的" });
+  await g.handler(g.event("@mybot 数到一万", { sender: "999", group: true }));
+  assert.equal(g.modelCalls.length, 0, "数到一万（中文数字）也应拦截");
+});
+
+test("0.0.4 上下文存储截断：超长回复存入时截到 3000 字加省略号", () => {
+  const store = new ConversationStore(20);
+  store.push("c1", "u1", "assistant", "长".repeat(5000));
+  const got = store.get("c1", "u1")[0];
+  assert.equal(got.content.length, 3001, "应截断为 3000 字 + 省略号");
+  assert.ok(got.content.endsWith("…"));
+  store.push("c1", "u1", "user", "短消息");
+  assert.equal(store.get("c1", "u1")[1].content, "短消息", "短消息不截断");
+});
+
 test("0.0.2 提供方列表标注类型：聊天/生图/识图人人有份，不标地理区域", async () => {
   const f = fixture({
     config: {

@@ -60,7 +60,7 @@ import { buildTtsRequest, pickVoiceName, cleanSpeechText, parseVoiceSwitch, voic
 import { isImageGenRequest, extractImagePrompt, buildImageGenRequest, parseImageGenResponse} from "./imagegen.js";
 import { decideSplit, MAX_SPLIT_PARTS } from "./split.js";
 import { composeClockName, currentHHMM} from "./nameclock.js";
-import { toolGate, TOOLS_PROMPT_NOTE, executeTool, extractTextToolCalls, stripTextToolCalls, directToolCommand } from "./tools.js";
+import { toolGate, TOOLS_PROMPT_NOTE, executeTool, extractTextToolCalls, stripTextToolCalls, directToolCommand, mechanicalBulkRequest } from "./tools.js";
 import { chatWithTools } from "./toolchat.js";
 import { ToolStore } from "./toolstore.js";
 import { synthesizeEdgeTts, EDGE_DEFAULT_VOICE } from "./edgetts.js";
@@ -2182,6 +2182,15 @@ return out;
     }
     // 普通用户冷却：间隔太短的提问直接忽略，防止刷屏烧额度。
     if (isCoolingDown(senderId)) return;
+
+    // 机械刷量拦截（v0.0.4）：「从1数到10000」「重复500遍」在调模型前直接回掉，
+    // 不占占位、不烧输出 token（判定与文案在 tools.mechanicalBulkRequest）。
+    const bulkReply = mechanicalBulkRequest(parsed.question);
+    if (bulkReply) {
+      afterAnswer(chatId, senderId, speakerName, parsed.question, bulkReply);
+      await sendToPeer(msg.peerId, { message: bulkReply, replyTo: msg.id });
+      return;
+    }
 
     // 先发占位消息；发不出去（如被群禁言 USER_BANNED_IN_CHANNEL）就记日志返回，不要硬撑。
     const placeholder = await sendPlaceholder(msg, chatId);

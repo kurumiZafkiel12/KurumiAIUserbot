@@ -80,6 +80,51 @@ test("chat 带 usage 选项被接口拒绝时，去掉选项重试一次（还�
   assert.equal(calls, 2);
 });
 
+test("0.0.4 chat 带 max_tokens 上限；接口不认时去掉上限重试", async () => {
+  const pool = makePool();
+  const entry = pool.getByName("a");
+  let seenParams = null;
+  entry.client = {
+    chat: {
+      completions: {
+        create: async (params) => {
+          seenParams = params;
+          return streamOf([{ choices: [{ delta: { content: "答" } }] }]);
+        },
+      },
+    },
+  };
+  await pool.chat(entry, [{ role: "user", content: "hi" }], null, null);
+  assert.equal(seenParams.max_tokens, 4096, "应带输出上限");
+
+  let calls = 0;
+  entry.client = {
+    chat: {
+      completions: {
+        create: async (params) => {
+          calls += 1;
+          if (params.max_tokens) throw new Error("max_tokens not supported");
+          return streamOf([{ choices: [{ delta: { content: "答" } }] }]);
+        },
+      },
+    },
+  };
+  const text = await pool.chat(entry, [{ role: "user", content: "hi" }], null, null);
+  assert.equal(text, "答");
+  assert.equal(calls, 3, "带上限两次被拒后，去掉上限第三次成功");
+});
+
+test("0.0.4 markFailure：内容风控拒绝不进冷却，普通失败照常冷却", () => {
+  const pool = makePool();
+  const a = pool.getByName("a");
+  pool.markFailure(a, new Error("400 Content Exists Risk (request_id: x)"));
+  assert.equal(a.cooldownUntil, 0, "风控拒绝不应进冷却");
+  assert.ok(a.lastError.includes("Content Exists Risk"), "错误仍要记录");
+  const c = pool.getByName("c");
+  pool.markFailure(c, new Error("500 boom"));
+  assert.ok(c.cooldownUntil > Date.now(), "普通失败应进冷却");
+});
+
 test("chat 已吐字后断流不重试（防重复发内容）", async () => {
   const pool = makePool();
   const entry = pool.getByName("a");

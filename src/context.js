@@ -1,5 +1,9 @@
 // 对话上下文：按「会话 + 用户」分别保存最近若干条消息，超长自动截断。
 
+// 单条存入上下文的字符上限：超长回复（如几千字的数数结果）整段存进去，会把后续
+// 每条请求的输入 token 顶高、还容易触发接口风控；存的时候截断，展示不受影响（v0.0.4）。
+const MAX_STORED_CONTENT_CHARS = 3000;
+
 export class ConversationStore {
   /**
    * @param {number} maxMessages 每组最多保留的消息条数（user 与 assistant 合计）
@@ -22,9 +26,11 @@ export class ConversationStore {
 
   /** 追加一条消息并截断到上限。 */
   push(chatId, userId, role, content) {
+    const text = String(content ?? "");
+    const capped = text.length > MAX_STORED_CONTENT_CHARS ? `${text.slice(0, MAX_STORED_CONTENT_CHARS)}…` : text;
     const k = this.key(chatId, userId);
     const list = this.store.get(k) || [];
-    list.push({ role, content });
+    list.push({ role, content: capped });
     while (list.length > this.maxMessages) list.shift();
     this.store.set(k, list);
   }
