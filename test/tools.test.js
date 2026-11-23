@@ -395,3 +395,13 @@ assert.doesNotThrow(() => ent.getBytes());
 const bad = new Api.MessageEntityMentionName({ offset: 0, length: 3, userId: inputUser });
 assert.throws(() => bad.getBytes());
 });
+
+test("v0.9.23 generate_image 工具：未注入通道时如实回未启用，注入后转交描述", async () => {
+assert.match(await executeTool("generate_image", { prompt: "一只猫" }, {}), /通道未启用/);
+const seen = [];
+const out = await executeTool("generate_image", { prompt: "东方明珠夜景" }, { imageGen: async (p) => { seen.push(p); return "图片已经生成并发到当前会话里了。"; } });
+assert.deepEqual(seen, ["东方明珠夜景"]);
+assert.match(out, /已经生成/);
+assert.equal(toolGate("帮我生成一张东方明珠的夜景照片"), true);
+assert.equal(toolGate("生产一张东方明珠的实景照"), true);
+});

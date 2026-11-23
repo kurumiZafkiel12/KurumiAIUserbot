@@ -755,3 +755,27 @@ test("v0.9.22 生图 502 自动重试一次后成功，占位符是（生图中.
   assert.equal(f.files.length, 1);
   assert.ok(f.sends.some((m) => m.message === "（生图中...）"));
 });
+
+test("v0.9.23 模型判定生图：正则没命中的说法经 generate_image 工具出图", async () => {
+  const png = Buffer.alloc(600, 7).toString("base64");
+  const f = fixture({
+    config: {
+      providers: [
+        { name: "default", model: "mock-model", baseURL: "https://offline.invalid/v1", apiKey: "x", dailyLimit: 0 },
+        { name: "imgone", model: "img-a", baseURL: "https://img.invalid/v1", apiKey: "y", dailyLimit: 0, image: true },
+      ],
+    },
+    deps: {
+      fetchImpl: async () => ({ ok: true, status: 200, json: async () => ({ data: [{ b64_json: png }] }) }),
+    },
+    model: (params, n) =>
+      n === 1
+        ? { choices: [{ message: { content: "", tool_calls: [{ id: "c1", type: "function", function: { name: "generate_image", arguments: JSON.stringify({ prompt: "东方明珠夜景照片" }) } }] } }] }
+        : { choices: [{ message: { content: "画好了。" } }] },
+  });
+  // 「照片」离动词太远（超出正则名词窗口），正则快线不命中，只能靠模型判定走工具。
+  await f.handler(f.event("帮我生成一张东方明珠的夜景照片"));
+  assert.ok(f.modelCalls.length >= 1, "应先经过模型判定");
+  assert.equal(f.files.length, 1);
+  assert.ok(f.sends.some((m) => m.message === "（生图中...）"));
+});

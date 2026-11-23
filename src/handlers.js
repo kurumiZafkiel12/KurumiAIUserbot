@@ -1950,6 +1950,35 @@ return out;
   }
 
   /** 生图问答：命中生图说法时走生图提供方，生成结果以图片回复。 */
+  /** 生图接口调用：构造请求 -> （5xx/无响应时隔 3 秒重试一次）-> 解析 -> 下载成 Buffer。
+   * 失败抛 Error：以「HTTP 」开头 = 接口不可用；「返回里没有图片」= 接口没给图；
+   * 「图片内容不完整」= 下载失败或内容异常。正则快线与 generate_image 工具共用。 */
+  async function fetchGeneratedImageBuffer(provider, prompt) {
+    const def = (config.providers || []).find((p) => p && p.name === provider.name) || provider;
+    const req = buildImageGenRequest(def, prompt);
+    let res = await fetchImpl(req.url, req.options).catch(() => null);
+    if (!res || !res.ok) {
+      const status = res ? res.status : 0;
+      if (!res || status >= 500) {
+        // 中转站偶发 502/网关无响应（2026-11-23 群内实测 tokennova 首发 502、
+        // 同参数直连却成功）：隔 3 秒自动重试一次，再失败才判失败。
+        logger.error(`生图请求失败（${provider.name}）：HTTP ${status || "无响应"}，重试一次`);
+        await sleepFn(3000);
+        res = await fetchImpl(req.url, req.options).catch(() => null);
+      }
+    }
+    if (!res || !res.ok) throw new Error(`HTTP ${res ? res.status : "无响应"}`);
+    const data = await res.json();
+    const parsedRes = parseImageGenResponse(data);
+    if (!parsedRes) throw new Error("返回里没有图片");
+    if (parsedRes.b64) return Buffer.from(parsedRes.b64, "base64");
+    if (parsedRes.url) {
+      const imgRes = await fetchImpl(parsedRes.url);
+      if (imgRes && imgRes.ok) return Buffer.from(await imgRes.arrayBuffer());
+    }
+    throw new Error("图片内容不完整");
+  }
+
   async function handleImageGen(msg, chatId, senderId, speakerName, parsed) {
     const provider = pool.firstImageProvider();
     if (!provider) {
@@ -1992,36 +2021,7 @@ return out;
     };
 
     try {
-      const def = (config.providers || []).find((p) => p && p.name === provider.name) || provider;
-      const req = buildImageGenRequest(def, prompt);
-      let res = await fetchImpl(req.url, req.options).catch(() => null);
-      if (!res || !res.ok) {
-        const status = res ? res.status : 0;
-        if (!res || status >= 500) {
-          // 中转站偶发 502/网关无响应（2026-11-23 群内实测 tokennova 首发 502、
-          // 同参数直连却成功）：隔 3 秒自动重试一次，再失败才报给用户。
-          logger.error(`生图请求失败（${provider.name}）：HTTP ${status || "无响应"}，重试一次`);
-          await sleepFn(3000);
-          res = await fetchImpl(req.url, req.options).catch(() => null);
-        }
-      }
-      if (!res || !res.ok) {
-        logger.error(`生图请求失败（${provider.name}）：HTTP ${res ? res.status : "无响应"}`);
-        return fail("生图失败了，接口暂时不可用，请稍后再试。");
-      }
-      const data = await res.json();
-      const parsedRes = parseImageGenResponse(data);
-      if (!parsedRes) {
-        logger.error(`生图返回里没有图片（${provider.name}）`);
-        return fail("生图失败了，接口没返回图片。");
-      }
-      let buf = null;
-      if (parsedRes.b64) {
-        buf = Buffer.from(parsedRes.b64, "base64");
-      } else if (parsedRes.url) {
-        const imgRes = await fetchImpl(parsedRes.url);
-        if (imgRes && imgRes.ok) buf = Buffer.from(await imgRes.arrayBuffer());
-      }
+      const buf = await fetchGeneratedImageBuffer(provider, prompt);
       if (!buf || buf.length < 500) {
         logger.error(`生图图片内容异常（${provider.name}）`);
         return fail("生图失败了，拿到的图片内容不完整。");
@@ -2047,9 +2047,74 @@ return out;
       usageStats.record(provider.model, null);
       afterAnswer(chatId, senderId, speakerName, parsed.question, "（已按要求生成图片）");
     } catch (err) {
+      if (String(err.message).startsWith("HTTP ")) {
+        logger.error(`生图请求失败（${provider.name}）：${err.message}`);
+        return fail("生图失败了，接口暂时不可用，请稍后再试。");
+      }
+      if (err.message === "返回里没有图片") {
+        logger.error(`生图返回里没有图片（${provider.name}）`);
+        return fail("生图失败了，接口没返回图片。");
+      }
+      if (err.message === "图片内容不完整") {
+        logger.error(`生图图片内容异常（${provider.name}）`);
+        return fail("生图失败了，拿到的图片内容不完整。");
+      }
       logger.error(`生图失败（${provider.name}）：${err.message}`);
       return fail("生图失败了，请稍后再试。");
     }
+  }
+
+  /** generate_image 工具的执行端工厂：模型判定用户想生图时经 ctx 调用，流程与正则快线
+   * 一致（选提供方、冷却/名额闸门、生图中占位、生成、发图、结算），返回一句话结果给模型。 */
+  function makeImageGenToolImpl(msg, chatId, senderId, speakerName, question) {
+    return async (prompt) => {
+      const p = String(prompt || "").trim();
+      if (!p) return "没给画面描述，没生成。";
+      const provider = pool.firstImageProvider();
+      if (!provider) return "当前没有可用的生图 API，没法生成。请如实告诉用户：需要号主先用 /ai 加生图api 添加。";
+      if (isCoolingDown(senderId)) return "用户操作太频繁、正在冷却中，这次没生成。";
+      if (!pool.reserve(provider)) return "生图模型暂时不可用（已达每日上限或冷却中），这次没生成。";
+      const placeholder = await sendPlaceholder(msg, chatId, "（生图中...）");
+      if (!placeholder) {
+        pool.release(provider);
+        return "生图占位消息发送失败，这次没生成。";
+      }
+      let settled = false;
+      try {
+        const buf = await fetchGeneratedImageBuffer(provider, p);
+        if (!buf || buf.length < 500) throw new Error("图片内容不完整");
+        const tmp = path.join(os.tmpdir(), `img_${Date.now()}_${Math.floor(Math.random() * 100000)}.png`);
+        fs.writeFileSync(tmp, buf);
+        try {
+          await client.sendFile(msg.peerId, { file: tmp, replyTo: msg.id });
+        } finally {
+          try {
+            fs.unlinkSync(tmp);
+          } catch {
+            // 临时文件删不掉不影响主流程。
+          }
+        }
+        try {
+          await client.deleteMessages(msg.peerId, [placeholder.id], { revoke: true });
+        } catch {
+          // 占位删不掉就留着，不影响图片本身。
+        }
+        pool.markSuccess(provider);
+        settled = true;
+        usageStats.record(provider.model, null);
+        afterAnswer(chatId, senderId, speakerName, question, "（已按要求生成图片）");
+        return "图片已经生成并发到当前会话里了。回复用户时简短确认即可，不要再说自己不会画图、发不了图。";
+      } catch (err) {
+        if (!settled) pool.release(provider);
+        logger.error(`生图失败（${provider.name}）：${err.message}`);
+        try {
+          await client.editMessage(msg.peerId, { message: placeholder.id, text: "生图失败了，请稍后再试。" });
+        } catch {
+          // 失败提示发不出不影响主流程。
+        }
+        return `生图失败了（${err.message}），已经在会话里发了失败提示。`;
+      }
+    };
   }
 
   async function handleChat(msg, chatId, senderId, speakerName, parsed, speakerUsername) {
@@ -2080,7 +2145,7 @@ return out;
     const directCmd = directToolCommand(question);
     if (directCmd) {
       try {
-        const directCtx = { chatId, senderId, senderName: speakerName, timezone: config.timezone, logger, outbox: [], store: toolStore, imageSearch: imageSearchImpl, client };
+        const directCtx = { chatId, senderId, senderName: speakerName, timezone: config.timezone, logger, outbox: [], store: toolStore, imageSearch: imageSearchImpl, imageGen: makeImageGenToolImpl(msg, chatId, senderId, speakerName, question), client };
         const directResult = await executeTool(directCmd.name, directCmd.args, directCtx);
         if (directResult) {
           const cleanDirect = scrubSecrets(String(directResult), collectSecrets(config));
@@ -2210,7 +2275,7 @@ return out;
           text = await chatWithTools(
             entry,
             messages,
-            { chatId, senderId, senderName: speakerName, timezone: config.timezone, logger, outbox: toolOutbox, store: toolStore, imageSearch: imageSearchImpl, client },
+            { chatId, senderId, senderName: speakerName, timezone: config.timezone, logger, outbox: toolOutbox, store: toolStore, imageSearch: imageSearchImpl, imageGen: makeImageGenToolImpl(msg, chatId, senderId, speakerName, question), client },
             (u) => {
               seenUsage = u;
             },
@@ -2264,7 +2329,7 @@ return out;
     {
       const leaked = extractTextToolCalls(answer);
       if (leaked.length > 0 && usedEntry) {
-        const toolCtx = { chatId, senderId, senderName: speakerName, timezone: config.timezone, logger, outbox: toolOutbox, store: toolStore, imageSearch: imageSearchImpl, client };
+        const toolCtx = { chatId, senderId, senderName: speakerName, timezone: config.timezone, logger, outbox: toolOutbox, store: toolStore, imageSearch: imageSearchImpl, imageGen: makeImageGenToolImpl(msg, chatId, senderId, speakerName, question), client };
         const resultLines = [];
         for (const call of leaked) {
           try {
