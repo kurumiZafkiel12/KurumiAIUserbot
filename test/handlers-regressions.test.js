@@ -847,3 +847,21 @@ test("0.0.1 群里分条最多 3 条且后续条不带引用，私聊仍 5 条",
   assert.equal(dParts.length, 4, "私聊补发 4 条（加占位编辑共 5 条）");
   assert.ok(dParts.every((s) => s.replyTo === undefined), "私聊后续条同样不带引用");
 });
+
+test("0.0.1 提供方列表标注区域：深求中国、hk 子域名香港、推不出的不标", async () => {
+  const f = fixture({
+    config: {
+      providers: [
+        { name: "default", model: "deepseek-flash", baseURL: "https://api.deepseek.com/v1", apiKey: "x", dailyLimit: 0 },
+        { name: "tokennova", model: "gpt-image-2", baseURL: "https://hk.tokennova.cc/v1", apiKey: "y", dailyLimit: 0, image: true },
+        { name: "mystery", model: "m-1", baseURL: "https://api.example.org/v1", apiKey: "z", dailyLimit: 0 },
+      ],
+    },
+  });
+  await f.handler(f.event("/ai 查看api"));
+  const list = f.sends.map((m) => m.message).join("\n");
+  assert.match(list, /default \| 模型：deepseek-flash \| 地址：https:\/\/api\.deepseek\.com\/v1 \| 区域：中国 \|/);
+  assert.match(list, /tokennova \| 模型：gpt-image-2 \| 地址：https:\/\/hk\.tokennova\.cc\/v1 \| 区域：香港 \| 状态：启用（生图）/);
+  const mysteryLine = list.split("\n").find((ln) => ln.includes("mystery"));
+  assert.ok(mysteryLine && !mysteryLine.includes("区域："), "推不出区域的提供方不硬标");
+});
