@@ -1,5 +1,9 @@
 # 更新日志
 
+## v0.9.20（2026-11-23）
+
+- 【加 API 改分步引导：不用再一条消息塞四个参数】号主反馈 /ai 加生图api 不好加——名字、baseURL、key、模型名要挤在一条消息里发完，手机上粘贴 key 时极易出错。改：/ai 加生图api 与 /ai 加聊天api 都支持分步添加——不带参数发命令后，机器人依次问名字、baseURL、key、模型名，一步一条、每步 60 秒；key 那一步按敏感待办处理（超时后迟到的 key 会被吞掉、不进模型不进记录）。原来的一条发全（四参数）继续可用；命令里给几段就从第几步开始问。分步中途会校验：名字带空格/重名、baseURL 不像网址都会当场拦下说明。帮助文案同步更新
+
 ## v0.9.19（2026-11-22）
 
 - 【提醒真 @ 终于修对：提及实体用错了类】v0.9.18 上线后群内复测仍没 @ 到人。查生产日志实锤：到点发送时抛 CastError「userId expected bigInt but received Object」——本 GramJS 版本的 MessageEntityMentionName 的 user_id 是 long 型（TL 定义 messageEntityMentionName#dc7b1140 user_id:long），v0.9.16 起调度器却往里塞 InputUser，序列化直接抛错、退回纯文本；而 v0.9.17 的日志把这个序列化失败误报成「实体解析失败」，探针又只验了解析、没验发送构造，所以连着两版没发现。探针回读实证：裸 long 版实体会被服务器丢弃，只有 InputMessageEntityMentionName（user_id:InputUser）回读到真提及实体。改：调度器改用 InputMessageEntityMentionName；日志区分「解析失败」与「带实体发送失败」两种原因；加回归测试钉住两个类的序列化行为

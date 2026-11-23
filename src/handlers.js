@@ -118,8 +118,8 @@ export const OWNER_HELP_TEXT = `可用命令：
 /ai 换key（再回 <序号> 选 API，再发新 key 全文；改完立即生效，不用重启）
 /ai 禁用api（再回 <序号>）
 /ai 启用api（再回 <序号>）
-/ai 加聊天api <名字> <baseURL> <key> <模型名>
-/ai 加生图api <名字> <baseURL> <key> <模型名>（只用于生图，不参与聊天）
+/ai 加聊天api（发命令后按提示分步发名字、baseURL、key、模型名；也可一条发全四个参数）
+/ai 加生图api（分步添加同上；只用于生图，不参与聊天）
 
 【识图】
 /ai 加识图（再回 <序号> 选 API，再发模型名，再发权重数字）
@@ -341,6 +341,7 @@ return (
 (entry.kind === "换key" && entry.step === 2) ||
 (entry.kind === "换搜索key" && entry.step === 2) ||
 (entry.kind === "加识图" && entry.step === 2) ||
+entry.kind === "加api" ||
 entry.kind === "加音色" ||
 (entry.kind === "加人格" && entry.step === 2)
 );
@@ -724,6 +725,57 @@ msg,
 );
 }
 
+/** 提供方名字是否已被占用（聊天池现存条目 + 已保存的自定义提供方）。 */
+function providerNameTaken(name) {
+return Boolean(pool.getByName(name)) || (config.customProviders || []).some((p) => p && p.name === name);
+}
+
+/** 保存一个新提供方（加聊天api/加生图api 的一步式与分步式共用）。 */
+function saveNewProvider({ name, baseURL, apiKeyValue, model, image }) {
+const entry = { name, baseURL, ["api" + "Key"]: apiKeyValue, model };
+if (image) entry.image = true;
+return saveAndReload({ customProviders: [...(config.customProviders || []), entry] });
+}
+
+/** 加 API 分步流程里、等用户发第 step 段时的提示语（step：1 名字 2 baseURL 3 key 4 模型名）。 */
+function addApiPrompt(step, image, name) {
+const what = image? "生图 API": "聊天 API";
+if (step === 1) return `开始添加${what}，分四步。先发名字（60 秒内直接发，不要带空格）。`;
+if (step === 2) return `名字：${name}。接着发 baseURL（如 https://api.example.com/v1），60 秒内有效。`;
+if (step === 3) return "地址收到。接着发 key 全文，60 秒内有效。（只用于保存，不会回显）";
+return "key 已收到。最后发模型名，60 秒内有效。";
+}
+
+/** 加 API 命令入口：参数给全（4 段）就一步保存；给不全就按已给的段数起分步 pending。 */
+async function startAddApi(msg, chatId, senderId, rest, image) {
+const parts = rest.map((p) => unwrapArg(p.trim())).filter(Boolean);
+const keyProp = "api" + "Key";
+if (parts.length >= 4) {
+const [name, baseURL, apiKeyValue, model] = parts;
+if (providerNameTaken(name)) {
+return reply(msg, `提供方名字「${name}」已经有了，换个名字再加。`);
+}
+if (!saveNewProvider({ name, baseURL, apiKeyValue, model, image })) return reply(msg, "保存失败，请看日志。");
+return reply(msg, addProviderDoneText(image, name, model));
+}
+const entry = { kind: "加api", image: Boolean(image), step: parts.length + 1 };
+if (parts[0]) entry.name = parts[0];
+if (parts[1]) entry.baseURL = parts[1];
+if (parts[2]) entry[keyProp] = parts[2];
+if (entry.step === 2 && providerNameTaken(entry.name)) {
+return reply(msg, `提供方名字「${entry.name}」已经有了，换个名字再加。`);
+}
+pending.set(chatId, senderId, entry);
+return reply(msg, addApiPrompt(entry.step, image, entry.name));
+}
+
+/** 加 API 成功文案（一步式与分步式共用）。 */
+function addProviderDoneText(image, name, model) {
+return image
+? `已添加生图提供方「${name}」（模型 ${model}），已生效。它不会进聊天池，只用来生图。（key 不会回显）`
+: `已添加提供方「${name}」（模型 ${model}），已生效。发 /ai 查看api 可确认。（key 不会回显）`;
+}
+
 /** 发起一个带自定义编号列表的 pending（识图/音色/人格/搜索 key 等）。 */
 async function startListPending(msg, chatId, senderId, entry, header, lines) {
 pending.set(chatId, senderId, entry);
@@ -747,6 +799,36 @@ return out;
    */
   async function executePending(msg, chatId, senderId, entry, text) {
     const keyProp = "api" + "Key";
+
+    // ---- 加 API 四步（名字 -> baseURL -> key -> 模型名；一步式在命令处直接处理） ----
+    if (entry.kind === "加api") {
+      if (entry.step === 1) {
+        const name = text.trim();
+        if (!name || /\s/.test(name)) return reply(msg, "名字是空的或带空格，这次没加上。重新发命令再试。");
+        if (providerNameTaken(name)) return reply(msg, `提供方名字「${name}」已经有了，换个名字重新发命令再加。`);
+        pending.set(chatId, senderId, { ...entry, step: 2, name });
+        return reply(msg, addApiPrompt(2, entry.image, name));
+      }
+      if (entry.step === 2) {
+        const baseURL = text.trim();
+        if (!/^https?:\/\/\S+$/i.test(baseURL)) return reply(msg, "baseURL 不像网址（要以 http:// 或 https:// 开头），这次没加上。重新发命令再试。");
+        pending.set(chatId, senderId, { ...entry, step: 3, baseURL });
+        return reply(msg, addApiPrompt(3, entry.image, entry.name));
+      }
+      if (entry.step === 3) {
+        const apiKeyValue = text.trim();
+        if (!apiKeyValue) return reply(msg, "key 是空的，这次没加上。重新发命令再试。");
+        pending.set(chatId, senderId, { ...entry, step: 4, [keyProp]: apiKeyValue });
+        return reply(msg, addApiPrompt(4, entry.image, entry.name));
+      }
+      const model = text.trim();
+      if (!model) return reply(msg, "模型名是空的，这次没加上。重新发命令再试。");
+      if (providerNameTaken(entry.name)) return reply(msg, `提供方名字「${entry.name}」在添加途中被占用了，这次没加上。`);
+      if (!saveNewProvider({ name: entry.name, baseURL: entry.baseURL, apiKeyValue: entry[keyProp], model, image: entry.image })) {
+        return reply(msg, "保存失败，请看日志。");
+      }
+      return reply(msg, addProviderDoneText(entry.image, entry.name, model));
+    }
     const digits = /^\d+$/.test(text) ? Number.parseInt(text, 10) : null;
     const pickFrom = (list) => {
       if (digits === null || !Array.isArray(list) || digits < 1 || digits > list.length) return null;
@@ -1268,31 +1350,11 @@ return out;
     }
 
     if (cmd === "加聊天api") {
-      const parts = rest.map((p) => unwrapArg(p.trim())).filter(Boolean);
-      if (parts.length !== 4) {
-        return reply(msg, "用法：/ai 加聊天api <名字> <baseURL> <key> <模型名>（名字不能有空格，四段都要有）");
-      }
-      const [name, baseURL, apiKeyValue, model] = parts;
-      if (pool.getByName(name) || (config.customProviders || []).some((p) => p && p.name === name)) {
-        return reply(msg, `提供方名字「${name}」已经有了，换个名字再加。`);
-      }
-      const next = [...(config.customProviders || []), { name, baseURL, [keyProp]: apiKeyValue, model }];
-      if (!saveAndReload({ customProviders: next })) return reply(msg, "保存失败，请看日志。");
-      return reply(msg, `已添加提供方「${name}」（模型 ${model}），已生效。发 /ai 查看api 可确认。（key 不会回显）`);
+      return startAddApi(msg, chatId, senderId, rest, false);
     }
 
     if (cmd === "加生图api") {
-      const parts = rest.map((p) => unwrapArg(p.trim())).filter(Boolean);
-      if (parts.length < 4) {
-        return reply(msg, "用法：/ai 加生图api <名字> <baseURL> <key> <模型名>");
-      }
-      const [name, baseURL, apiKeyValue, model] = parts; // 第 5 个参数起一律容忍并忽略
-      if (pool.getByName(name) || (config.customProviders || []).some((p) => p && p.name === name)) {
-        return reply(msg, `提供方名字「${name}」已经有了，换个名字再加。`);
-      }
-      const next = [...(config.customProviders || []), { name, baseURL, [keyProp]: apiKeyValue, model, image: true }];
-      if (!saveAndReload({ customProviders: next })) return reply(msg, "保存失败，请看日志。");
-      return reply(msg, `已添加生图提供方「${name}」（模型 ${model}），已生效。它不会进聊天池，只用来生图。（key 不会回显）`);
+      return startAddApi(msg, chatId, senderId, rest, true);
     }
 
     // ---- 识图池 ----

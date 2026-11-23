@@ -673,3 +673,37 @@ test("v0.9.4 换模型：模型列表拉不到时，直接发模型名全文也�
   const saved = JSON.parse(fs.readFileSync(path.join(tmpRoot, "config.json"), "utf-8"));
   assert.equal(saved.providerOverrides.default.model, "typed-model");
 });
+
+test("v0.9.20 加生图api 分步添加：四步走完落盘为生图提供方，key 不回显不进模型", async () => {
+  const f = fixture();
+  await f.handler(f.event("/ai 加生图api"));
+  await f.handler(f.event("imgone"));
+  await f.handler(f.event("https://img.example.com/v1"));
+  await f.handler(f.event("FAKE-IMAGE-KEY"));
+  await f.handler(f.event("gpt-image-1"));
+  const saved = JSON.parse(fs.readFileSync(path.join(tmpRoot, "config.json"), "utf-8"));
+  const added = (saved.customProviders || []).find((p) => p.name === "imgone");
+  assert.ok(added, "应保存新提供方");
+  assert.equal(added.image, true);
+  assert.equal(added.model, "gpt-image-1");
+  assert.equal(added.apiKey, "FAKE-IMAGE-KEY");
+  assert.ok(!f.sends.some((m) => m.message.includes("FAKE-IMAGE-KEY")), "key 不得回显");
+  assert.equal(f.modelCalls.length, 0);
+});
+
+test("v0.9.20 加生图api 一步式仍可用；分步中途重名被拒", async () => {
+  const f = fixture();
+  await f.handler(f.event("/ai 加生图api one https://a.example.com/v1 FAKE-K1 model-x"));
+  const saved = JSON.parse(fs.readFileSync(path.join(tmpRoot, "config.json"), "utf-8"));
+  assert.ok((saved.customProviders || []).some((p) => p.name === "one" && p.image === true));
+  const f2 = fixture({
+    config: {
+      customProviders: [{ name: "one", baseURL: "https://a.example.com/v1", apiKey: "FAKE-K1", model: "model-x", image: true }],
+    },
+  });
+  await f2.handler(f2.event("/ai 加生图api"));
+  await f2.handler(f2.event("one"));
+  const reply = f2.sends.map((s) => s.message).join("\n");
+  assert.match(reply, /已经有了/);
+});
+
