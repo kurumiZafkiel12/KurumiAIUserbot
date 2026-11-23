@@ -779,3 +779,12 @@ test("v0.9.23 模型判定生图：正则没命中的说法经 generate_image �
   assert.equal(f.files.length, 1);
   assert.ok(f.sends.some((m) => m.message === "（生图中...）"));
 });
+
+test("v0.9.24 系统提示含消息核实段：未证实不确认不编数字、旧知识不否定新事", async () => {
+  const f = fixture();
+  await f.handler(f.event("随便聊聊今天过得怎么样"));
+  const sys = String(f.modelCalls[0]?.messages?.[0]?.content || "");
+  assert.ok(sys.includes("【消息核实】"), "系统提示须含消息核实段");
+  assert.ok(sys.includes("不许编造涨幅、金额、时间、人数这类具体数字"), "须含不编数字");
+  assert.ok(sys.includes("不许断言没这回事"), "须含不凭旧知识否定");
+});

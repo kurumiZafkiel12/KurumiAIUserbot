@@ -243,3 +243,10 @@ assert.ok(planSearch("抽", { provider: "lightpanda" }), "无历史的首条短�
 assert.ok(planSearch("X上的玉米须有没有黑历史", { provider: "lightpanda", hasHistory: true }), "长问题照常搜");
 assert.ok(planSearch("联网搜索 抽", { provider: "lightpanda", hasHistory: true }), "显式联网搜索优先放行");
 });
+
+test("v0.9.24 formatSearchContext 说明含时效纪律：旧资料不许当现状、不许断言没发生", () => {
+const out = formatSearchContext("lightpanda", "旧结果", "今天有什么进展");
+assert.ok(out.includes("不许拿旧资料当现状"), "须含旧资料不当现状");
+assert.ok(out.includes("更不许断言事情没发生"), "须含不断言没发生");
+assert.ok(out.includes("以资料为准"), "须含资料优先于旧知识");
+});
