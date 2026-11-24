@@ -2065,21 +2065,17 @@ if (timer) clearTimeout(timer);
   }
 
   /** 识图问答：下载照片 -> 从识图池按权重挑条目 -> 用该 API 的连接以条目模型发带图请求。 */
-  async function handleVisionChat(msg, chatId, senderId, speakerName, parsed, photoMsg, speakerUsername) {
-    const question = parsed.question || "这张图片是什么？请描述一下。";
-    if (isCoolingDown(senderId)) return;
-
+  /**
+   * 识图调用核心：下载图片、组装消息、轮询识图池，返回 { answer }（已清洗）或
+   * { error }（pool-empty / download-failed / all-failed）。只负责问出答案，
+   * 发送由调用方处理——识图直答与「识图+生图」组合流程共用这一份。
+   */
+  async function queryVisionAnswer(msg, chatId, senderId, speakerName, photoMsg, question, speakerUsername) {
     const items = flattenVisionPool(config.visionPool).filter((it) => {
       const e = pool.getByName(it.apiName);
       return e && !e.disabled && !e.image;
     });
-    if (items.length === 0) {
-      await reply(msg, "识图池是空的，发图提问暂时没模型可用。先让号主用 /ai 加识图 建池。");
-      return;
-    }
-
-    const placeholder = await sendPlaceholder(msg, chatId);
-    if (!placeholder) return;
+    if (items.length === 0) return { error: "pool-empty" };
 
     let buf = null;
     try {
@@ -2087,14 +2083,7 @@ if (timer) clearTimeout(timer);
     } catch (err) {
       logger.error(`下载照片失败（chat=${chatId}）：${err.message}`);
     }
-    if (!buf) {
-      try {
-        await client.editMessage(msg.peerId, { message: placeholder.id, text: "图片下载失败，请重发一次。" });
-      } catch (err) {
-        logger.error(`发送下载失败提示出错：${err.message}`);
-      }
-      return;
-    }
+    if (!buf) return { error: "download-failed" };
 
     const dataUrl = `data:image/jpeg;base64,${Buffer.from(buf).toString("base64")}`;
     const history = store.get(chatId, senderId);
@@ -2142,16 +2131,48 @@ if (timer) clearTimeout(timer);
       }
     }
 
-    if (!answer) {
-      try {
-        await client.editMessage(msg.peerId, { message: placeholder.id, text: "抱歉，识图模型暂时都不可用，请稍后再试。" });
-      } catch (err) {
-        logger.error(`发送识图失败提示出错：${err.message}`);
-      }
+    if (!answer) return { error: "all-failed" };
+    return { answer: scrubSecrets(answer, collectSecrets(config)) };
+  }
+
+  /** 识图失败时把占位消息改成对应的失败文案（识图直答与组合流程共用）。 */
+  async function editVisionFailure(msg, placeholder, error) {
+    const text =
+      error === "pool-empty"
+        ? "识图池是空的，发图提问暂时没模型可用。先让号主用 /ai 加识图 建池。"
+        : error === "download-failed"
+          ? "图片下载失败，请重发一次。"
+          : "抱歉，识图模型暂时都不可用，请稍后再试。";
+    try {
+      await client.editMessage(msg.peerId, { message: placeholder.id, text });
+    } catch (err) {
+      logger.error(`发送识图失败提示出错：${err.message}`);
+    }
+  }
+
+  async function handleVisionChat(msg, chatId, senderId, speakerName, parsed, photoMsg, speakerUsername) {
+    const question = parsed.question || "这张图片是什么？请描述一下。";
+    if (isCoolingDown(senderId)) return;
+
+    const hasVision = flattenVisionPool(config.visionPool).some((it) => {
+      const e = pool.getByName(it.apiName);
+      return e && !e.disabled && !e.image;
+    });
+    if (!hasVision) {
+      await reply(msg, "识图池是空的，发图提问暂时没模型可用。先让号主用 /ai 加识图 建池。");
       return;
     }
 
-    const clean = scrubSecrets(answer, collectSecrets(config));
+    const placeholder = await sendPlaceholder(msg, chatId);
+    if (!placeholder) return;
+
+    const res = await queryVisionAnswer(msg, chatId, senderId, speakerName, photoMsg, question, speakerUsername);
+    if (res.error) {
+      await editVisionFailure(msg, placeholder, res.error);
+      return;
+    }
+
+    const clean = res.answer;
     afterAnswer(chatId, senderId, speakerName, question, clean);
     try {
       await sendAnswer(msg, placeholder, clean, chatId);
@@ -2159,6 +2180,33 @@ if (timer) clearTimeout(timer);
       logger.error(`发送识图答案失败（chat=${chatId}）：${err.message}`);
     }
     await maybeSpeak(msg, chatId, senderId, clean, false);
+  }
+
+  /**
+   * 识图+生图组合（带图、又明确要生图）：先识图拿到画面描述，再把描述作为本轮
+   * 特别指令注入普通聊天——聊天模型在回复里描述、并调用 generate_image 按描述
+   * 生成新图。这类消息以前被识图通道整个吞掉：识图模型手里没有生图工具，只会
+   * 回「当前没有可调用的生图工具」，明明配了生图 API 却用不上（2026-11-24 茶话会实测）。
+   */
+  async function handleVisionThenGen(msg, chatId, senderId, speakerName, parsed, photoMsg, speakerUsername) {
+    if (isCoolingDown(senderId)) return;
+    const placeholder = await sendPlaceholder(msg, chatId);
+    if (!placeholder) return;
+    const res = await queryVisionAnswer(
+      msg,
+      chatId,
+      senderId,
+      speakerName,
+      photoMsg,
+      "请详细描述这张图片的画面内容（主体、人物外观、服装、表情、场景、风格、色调），只描述画面本身，不要提及截图、边框、手机或聊天软件界面。",
+      speakerUsername,
+    );
+    if (res.error) {
+      await editVisionFailure(msg, placeholder, res.error);
+      return;
+    }
+    const note = `【本轮特别指令】用户这条消息带了一张图片，还要求按图片生成新图。识图模型对这张图的描述是：「${res.answer}」。请这样处理：先在回复里用你自己的话把这张图描述一下，然后调用 generate_image 工具生成一张新图，提示词以这段描述为蓝本、只写画面内容（不要出现截图、边框、手机界面之类的话）。你是有 generate_image 工具可以用的，不要说没有生图工具。`;
+    await handleChat(msg, chatId, senderId, speakerName, parsed, speakerUsername, note, placeholder);
   }
 
   /** 生图问答：命中生图说法时走生图提供方，生成结果以图片回复。 */
@@ -2350,7 +2398,7 @@ if (timer) clearTimeout(timer);
     };
   }
 
-  async function handleChat(msg, chatId, senderId, speakerName, parsed, speakerUsername) {
+  async function handleChat(msg, chatId, senderId, speakerName, parsed, speakerUsername, extraNote = "", presetPlaceholder = null) {
     if (!parsed.question) {
       // 只 @ 不说话（光喊一声）：不回脚本味的固定提示句——按号主定版（v0.6.6 起会话类
       // 不发罐头回复），替成一句「在吗」当问题走模型，让它用人设自然接话。
@@ -2365,7 +2413,8 @@ if (timer) clearTimeout(timer);
     const bulkHit = mechanicalBulkRequest(parsed.question);
 
     // 先发占位消息；发不出去（如被群禁言 USER_BANNED_IN_CHANNEL）就记日志返回，不要硬撑。
-    const placeholder = await sendPlaceholder(msg, chatId);
+    // 组合流程（识图+生图）会把自己已发的占位传进来复用，避免连发两条占位。
+    const placeholder = presetPlaceholder || (await sendPlaceholder(msg, chatId));
     if (!placeholder) return;
 
     // 「说 xxx」：剥掉前缀并强制这一条追加语音（本群没开说时也发）。
@@ -2456,7 +2505,7 @@ if (timer) clearTimeout(timer);
 
     const history = store.get(chatId, senderId);
     const messages = [
-      { role: "system", content: buildSystemParts(senderId, speakerName, chatId, speakerUsername, bulkRefusalNote(bulkHit)) },
+      { role: "system", content: buildSystemParts(senderId, speakerName, chatId, speakerUsername, [bulkRefusalNote(bulkHit), extraNote].filter(Boolean).join("\n")) },
       ...history,
       { role: "user", content: question },
     ];
@@ -3007,6 +3056,12 @@ if (timer) clearTimeout(timer);
       // 识图池为空、但用户这句带了真实文字时，不走识图（别用「识图不可用」把文字问题
       // 一起打发），落回下面的普通文字问答；纯图无文字时仍走识图报错（v0.9.11）。
       if (photoSource && !(flattenVisionPool(config.visionPool).length === 0 && String(text || "").trim())) {
+        // 带图又明确要生图：走组合流程（先识图描述、再由聊天模型调 generate_image），
+        // 不能整个吞进识图通道——识图模型没有生图工具，只会回「没有生图工具」。
+        if (isImageGenRequest(parsed.question)) {
+          await handleVisionThenGen(msg, chatId, senderId, speakerName, parsed, photoSource, speakerUsername);
+          return;
+        }
         await handleVisionChat(msg, chatId, senderId, speakerName, parsed, photoSource, speakerUsername);
         return;
       }

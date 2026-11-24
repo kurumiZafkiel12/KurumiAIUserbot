@@ -788,6 +788,42 @@ test("v0.9.23 模型判定生图：正则没命中的说法经 generate_image �
   assert.ok(ansIdx > genIdx, "最终回复应落在同一条占位上、且在生图之后");
 });
 
+test("0.1.1 带图+要生图：先识图拿描述，再走聊天调 generate_image 出图，不再回「没有生图工具」", async () => {
+  const png = Buffer.alloc(600, 7).toString("base64");
+  let chatRounds = 0;
+  const f = fixture({
+    config: {
+      providers: [
+        { name: "default", model: "mock-model", baseURL: "https://offline.invalid/v1", apiKey: "x", dailyLimit: 0 },
+        { name: "imgone", model: "img-a", baseURL: "https://img.invalid/v1", apiKey: "y", dailyLimit: 0, image: true },
+      ],
+      visionPool: { default: [{ model: "vision-mock", weight: 1 }] },
+    },
+    deps: {
+      fetchImpl: async () => ({ ok: true, status: 200, json: async () => ({ data: [{ b64_json: png }] }) }),
+    },
+    model: (params) => {
+      const msgs = params.messages || [];
+      const hasImage = msgs.some((m) => Array.isArray(m.content) && m.content.some((c) => c.type === "image_url"));
+      if (hasImage) return { choices: [{ message: { content: "蓝发女仆二次元插画，微笑，室内绿植背景" } }] };
+      chatRounds += 1;
+      if (chatRounds === 1) {
+        // 聊天第一轮：系统提示里必须带着识图描述与本轮特别指令。
+        const sys = String(msgs[0]?.content || "");
+        assert.ok(sys.includes("本轮特别指令"), "聊天系统提示应含识图+生图特别指令");
+        assert.ok(sys.includes("蓝发女仆二次元插画"), "特别指令应带上识图描述");
+        return { choices: [{ message: { content: "", tool_calls: [{ id: "c1", type: "function", function: { name: "generate_image", arguments: JSON.stringify({ prompt: "蓝发女仆二次元插画，微笑" }) } }] } }] };
+      }
+      return { choices: [{ message: { content: "图里是蓝发女仆，按这个样子给你画了一张。" } }] };
+    },
+  });
+  await f.handler(f.event("看看这张图，描述一下并按照描述生成图片", { photo: true }));
+  assert.equal(f.files.length, 1, "应生成并发出一张新图");
+  const all = [...f.sends.map((m) => m.message), ...f.edits.map((e) => e.text)].join("\n");
+  assert.match(all, /画了一张/, "聊天回复应正常落地");
+  assert.ok(!all.includes("没有可调用的生图工具"), "不许再回没有生图工具");
+});
+
 test("v0.9.24 系统提示含消息核实段：未证实不确认不编数字、旧知识不否定新事", async () => {
   const f = fixture();
   await f.handler(f.event("随便聊聊今天过得怎么样"));
