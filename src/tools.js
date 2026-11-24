@@ -5,6 +5,7 @@
 // 结果回喂给模型组织成自然回复——不是脚本罐头答复。
 
 import crypto from "node:crypto";
+import { renderRecords } from "./records.js";
 
 /* ---------------- 通用小工具 ---------------- */
 
@@ -1090,6 +1091,50 @@ export function listRemindersTool(ctx) {
   return `待触发的提醒：\n${list.map((r, i) => `${i + 1}. ${new Intl.DateTimeFormat("zh-CN", { timeZone: ctx.timezone || "Asia/Shanghai", dateStyle: "medium", timeStyle: "short" }).format(new Date(r.at))}：${r.text}`).join("\n")}`;
 }
 
+/**
+ * 实时拉取当前群最近的聊天记录（用户问「今天群里聊了什么」时用）。
+ * 被动记录（records.json）靠实时事件流，大群里会漏掉大半——2026-11-24 1024 群
+ * 实测：一天 500+ 条消息只记下个位数、还全是跟机器人有关的——所以总结类问题
+ * 必须在提问当下现拉 Telegram 历史才靠得住，不许只凭被动记录回答。
+ */
+export async function groupHistoryTool(args, ctx) {
+  if (!ctx || !ctx.client || !ctx.chatId) throw new Error("当前会话拿不到群记录");
+  if (!String(ctx.chatId).startsWith("-")) return "这里是私聊，没有群聊天记录可拉。";
+  const hours = Math.min(Math.max(Number(args && args.hours) || 24, 1), 72);
+  const limit = Math.min(Math.max(Math.floor(Number(args && args.limit) || 300), 50), 500);
+  let msgs;
+  try {
+    msgs = await ctx.client.getMessages(ctx.chatId, { limit });
+  } catch (e) {
+    throw new Error(`拉取群消息失败：${(e && e.message) || e}`);
+  }
+  const since = Date.now() - hours * 3600 * 1000;
+  const items = [];
+  for (const m of msgs || []) {
+    if (!m || m.action) continue; // 入群/置顶等服务消息不算聊天
+    const tsMs = typeof m.date === "number" ? m.date * 1000 : NaN;
+    if (Number.isNaN(tsMs) || tsMs < since) continue;
+    const text = String(m.message || "").replace(/\s+/g, " ").trim();
+    if (!text) continue; // 纯图片/贴纸没有文字内容，跳过
+    const s = m.sender;
+    const fromSender = s
+      ? String(s.firstName ? [s.firstName, s.lastName].filter(Boolean).join(" ") : s.title || s.username || "").trim()
+      : "";
+    const name = fromSender || (m.postAuthor ? String(m.postAuthor).trim() : "") || "群友";
+    items.push({ ts: new Date(tsMs).toISOString(), name, text });
+  }
+  items.reverse(); // getMessages 返回新→旧，渲染要旧→新
+  if (items.length === 0) {
+    return `最近 ${hours} 小时内没拉到带文字的群消息（可能大家没怎么说话，或发的都是图片/贴纸）。`;
+  }
+  let rendered = renderRecords(items, ctx.timezone);
+  const MAX_CHARS = 12000;
+  if (rendered.length > MAX_CHARS) {
+    rendered = `（记录太长，只给最近的一部分）\n${rendered.slice(-MAX_CHARS)}`;
+  }
+  return `本群最近 ${hours} 小时内的聊天记录（共 ${items.length} 条带文字的消息，刚刚实时从 Telegram 拉取）：\n${rendered}`;
+}
+
 export function todoTool(action, text, index, ctx) {
   if (!ctx || !ctx.store) throw new Error("待办功能未就绪");
   const key = `${ctx.chatId}:${ctx.senderId}`;
@@ -1145,6 +1190,7 @@ export const TOOL_DEFS = [
 { name: "world_time", description: "查某个城市/时区的当前时间。place 给城市中文名（如 东京、纽约）或 IANA 时区；不给就是机器人时区的当前时间。", parameters: S({ place: STR}), run: (a, ctx) => worldTimeTool(a.place, ctx && ctx.timezone)},
 { name: "set_reminder", description: "设定时提醒：到点时机器人会在当前会话 @ 设定者发提醒。用户说相对时间（X 秒/分钟/小时后）时优先填 in_seconds（秒数，如 1 分钟后填 60），不要自己换算时区；用户给了绝对日期时间时才填 at（ISO 字符串带时区，如 2026-11-22T09:00:00+09:00）。text 填提醒内容。", parameters: S({ text: STR, at: STR, in_seconds: NUM }, ["text"]), run: (a, ctx) => addReminderTool(a, ctx)},
 { name: "list_reminders", description: "查看当前会话还没触发的提醒列表。", parameters: S({}), run: (a, ctx) => listRemindersTool(ctx)},
+{ name: "group_history", description: "实时拉取当前群聊最近的聊天记录（每条带时间，从 Telegram 现拉，不是凭记忆）。用户问「今天/昨天/刚才这个群里聊了什么」「群里在聊什么」「谁说过什么」时必须调用它再回答，不要只凭上下文里的群记录段（那份可能不全）。hours 是往前看多少小时（问今天给 24、问昨天给 48、问刚才给 3），limit 是最多拉多少条（默认 300）。只在群里可用。", parameters: S({ hours: NUM, limit: NUM }), run: (a, ctx) => groupHistoryTool(a, ctx) },
 { name: "todo", description: "待办清单（按会话+用户保存）。action 取 add（加一条，给 text）、list（查看）、done（完成一条，给 index 序号）、clear（清空）。", parameters: S({ action: STR, text: STR, index: NUM}, ["action"]), run: (a, ctx) => todoTool(a.action, a.text, a.index, ctx)},
 { name: "base64", description: "Base64 编码或解码。mode 取 encode 或 decode。", parameters: S({ text: STR, mode: STR}, ["text", "mode"]), run: (a) => base64Tool(a.text, a.mode)},
 { name: "url_codec", description: "URL 编码或解码。mode 取 encode 或 decode。", parameters: S({ text: STR, mode: STR}, ["text", "mode"]), run: (a) => urlCodecTool(a.text, a.mode)},

@@ -524,7 +524,7 @@ if (!recordsEnabledFor(chatId)) return "";
 const limit = (config.recordContextLimit || {})[chatId] || 100;
 const rendered = renderRecords(records.recent(chatId, limit), config.timezone);
 if (!rendered) return "";
-return `【本群最近的聊天记录】（每条开头的 [月-日 时:分] 是这条消息的时间，与上面当前时间的时区一致；供你了解大家在聊什么。用户问「今天/昨天/刚才聊了什么」时，按日期对着回答：只汇总对应日期的记录，不要把别的日期的事说成那天的；对应日期没什么记录就直说没聊什么）\n${rendered}`;
+return `【本群最近的聊天记录】（每条开头的 [月-日 时:分] 是这条消息的时间，与上面当前时间的时区一致；供你了解大家在聊什么。注意：这份记录可能不全——大群里会漏掉很多。用户问「今天/昨天/刚才群里聊了什么」时，先调用 group_history 工具实时拉取再回答，不要只凭这段记录下结论；拉回来的记录按日期对着汇总，不要把别的日期的事说成那天的）\n${rendered}`;
 }
 
 /** 语音人格段：本群开启了说、且当前音色设了人格时注入，塑造说话风格（随后会追加语音朗读同一文本）。 */

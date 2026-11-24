@@ -315,6 +315,34 @@ test("stock_quote：腾讯行情文本解析（动态定位时间字段）", () 
   assert.equal(parseTencentQuote(""), null);
 });
 
+test("group_history：实时拉取按时间窗过滤、旧→新排序、带时间前缀（v0.0.10）", async () => {
+  const def = TOOL_DEFS.find((t) => t.name === "group_history");
+  assert.ok(def, "group_history 应已注册");
+  const nowSec = Math.floor(Date.now() / 1000);
+  // getMessages 返回新→旧：新消息在前
+  const fakeMsgs = [
+    { date: nowSec - 600, message: "刚说的", sender: { firstName: "乙" } },
+    { date: nowSec - 3600, message: "一小时前的", sender: { firstName: "甲" } },
+    { date: nowSec - 600, message: "", sender: { firstName: "丙" } }, // 纯媒体无文字，跳过
+    { date: nowSec - 600, action: { className: "MessageActionChatAddUser" }, message: "", sender: null }, // 服务消息，跳过
+    { date: nowSec - 25 * 3600, message: "昨天的旧消息", sender: { firstName: "甲" } }, // 超出 24 小时窗
+  ];
+  const ctx = {
+    chatId: "-100999",
+    timezone: "Asia/Shanghai",
+    client: { getMessages: async () => fakeMsgs },
+  };
+  const out = await def.run({ hours: 24 }, ctx);
+  assert.match(out, /实时从 Telegram 拉取/);
+  assert.match(out, /甲：一小时前的/);
+  assert.match(out, /乙：刚说的/);
+  assert.ok(out.indexOf("一小时前的") < out.indexOf("刚说的"), "应按旧→新排序");
+  assert.ok(!out.includes("昨天的旧消息"), "超出时间窗的应被过滤");
+  assert.match(out, /\[\d{2}-\d{2} \d{2}:\d{2}\] 甲：一小时前的/, "每条应带时间前缀");
+  const priv = await def.run({ hours: 24 }, { ...ctx, chatId: "111" });
+  assert.match(priv, /私聊/);
+});
+
 test("stock_quote：工具门命中股价类问题且工具已注册", () => {
   assert.equal(toolGate("Spx收盘价是多少"), true);
   assert.equal(toolGate("英伟达股价怎么样"), true);
