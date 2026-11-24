@@ -522,9 +522,9 @@ return (config.recordGroups || []).includes(id);
 function recordsSegment(chatId) {
 if (!recordsEnabledFor(chatId)) return "";
 const limit = (config.recordContextLimit || {})[chatId] || 100;
-const rendered = renderRecords(records.recent(chatId, limit));
+const rendered = renderRecords(records.recent(chatId, limit), config.timezone);
 if (!rendered) return "";
-return `【本群最近的聊天记录】（供你了解大家在聊什么；用户问「我们在聊什么」时据此回答）\n${rendered}`;
+return `【本群最近的聊天记录】（每条开头的 [月-日 时:分] 是这条消息的时间，与上面当前时间的时区一致；供你了解大家在聊什么。用户问「今天/昨天/刚才聊了什么」时，按日期对着回答：只汇总对应日期的记录，不要把别的日期的事说成那天的；对应日期没什么记录就直说没聊什么）\n${rendered}`;
 }
 
 /** 语音人格段：本群开启了说、且当前音色设了人格时注入，塑造说话风格（随后会追加语音朗读同一文本）。 */
@@ -1728,7 +1728,7 @@ if (timer) clearTimeout(timer);
         }
         const items = records.recent(chatId, 10);
         if (items.length === 0) return reply(msg, "本群暂时还没有记录到消息。");
-        return reply(msg, `本群最近 ${items.length} 条记录：\n${renderRecords(items)}`);
+        return reply(msg, `本群最近 ${items.length} 条记录：\n${renderRecords(items, config.timezone)}`);
       }
       const groups = [...new Set([...(config.recordGroups || []), ...records.chats()])].filter((g) => recordsEnabledFor(g));
       if (groups.length === 0) return reply(msg, "当前没有正在记录的群。");

@@ -106,13 +106,43 @@ export class GroupRecords {
   }
 }
 
+const recordTimeFormatters = new Map();
+
 /**
- * 把记录拼成注入模型的文本：一行一条「名字：内容」。
+ * 记录的时间前缀 [月-日 时:分]（按机器人时区换算）。
+ * 2026-11-24 实测教训：记录注入时不带时间，模型分不清今天和昨天——
+ * 有人问「今天群里聊了什么」，它把昨天的事一并说成今天的。
+ * ts 缺失/坏值时返回空串（老记录照常渲染）。
+ */
+function recordTimePrefix(ts, timeZone) {
+  if (!ts) return "";
+  const d = new Date(ts);
+  if (Number.isNaN(d.getTime())) return "";
+  let tz = typeof timeZone === "string" && timeZone.trim() ? timeZone.trim() : "Asia/Shanghai";
+  let fmt = recordTimeFormatters.get(tz);
+  if (!fmt) {
+    const opts = { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hourCycle: "h23" };
+    try {
+      fmt = new Intl.DateTimeFormat("zh-CN", { ...opts, timeZone: tz });
+    } catch {
+      tz = "Asia/Shanghai";
+      fmt = new Intl.DateTimeFormat("zh-CN", { ...opts, timeZone: tz });
+    }
+    recordTimeFormatters.set(tz, fmt);
+  }
+  const parts = fmt.formatToParts(d);
+  const get = (t) => (parts.find((x) => x.type === t) || {}).value || "";
+  return `[${get("month")}-${get("day")} ${get("hour")}:${get("minute")}] `;
+}
+
+/**
+ * 把记录拼成注入模型的文本：一行一条「[时间] 名字：内容」。
  * 只给名字不给数字 ID（给模型的文本里不出现用户 ID，是定版规矩）。
- * @param {Array<{name: string, text: string}>} items
+ * @param {Array<{name: string, text: string, ts?: string}>} items
+ * @param {string} [timeZone] 时间前缀的时区（机器人时区），缺省 Asia/Shanghai
  * @returns {string} 空记录返回空串
  */
-export function renderRecords(items) {
+export function renderRecords(items, timeZone) {
   if (!Array.isArray(items) || items.length === 0) return "";
-  return items.map((it) => `${it.name || "群友"}：${it.text}`).join("\n");
+  return items.map((it) => `${recordTimePrefix(it.ts, timeZone)}${it.name || "群友"}：${it.text}`).join("\n");
 }

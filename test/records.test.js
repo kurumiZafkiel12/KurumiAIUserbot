@@ -35,6 +35,21 @@ test("renderRecords 拼成「名字：内容」，不带数字 ID", () => {
   assert.equal(renderRecords([]), "");
 });
 
+test("renderRecords 带时间前缀（机器人时区），跨天能分清（v0.0.9）", () => {
+  const out = renderRecords(
+    [
+      // UTC 11-23 15:04 = 北京 11-23 23:04（昨天）
+      { name: "甲", text: "昨天的事", ts: "2026-11-23T15:04:00.000Z" },
+      // UTC 11-23 16:30 = 北京 11-24 00:30（今天）——UTC 日期和北京日期不同天，正是翻车点
+      { name: "乙", text: "今天的事", ts: "2026-11-23T16:30:00.000Z" },
+      // 没 ts 的老记录不带前缀，照常渲染
+      { name: "丙", text: "没时间的" },
+    ],
+    "Asia/Shanghai",
+  );
+  assert.equal(out, "[11-23 23:04] 甲：昨天的事\n[11-24 00:30] 乙：今天的事\n丙：没时间的");
+});
+
 test("落盘后能读回；文件损坏按空启动不抛错", () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "userbot-records-"));
   const file = path.join(dir, "records.json");
