@@ -2,7 +2,7 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
-import { isImageGenRequest, extractImagePrompt, buildImageGenRequest, parseImageGenResponse } from "../src/imagegen.js";
+import { isImageGenRequest, extractImagePrompt, isReferentialImagePrompt, buildImageGenRequest, parseImageGenResponse } from "../src/imagegen.js";
 
 const keyProp = "api" + "Key";
 
@@ -87,4 +87,14 @@ assert.equal(isImageGenRequest("生产一张东方明珠的实景照，真实"),
 assert.equal(extractImagePrompt("生产一张东方明珠的实景照，真实"), "东方明珠的实景照，真实");
 assert.equal(isImageGenRequest("生产一个函数"), false);
 assert.equal(isImageGenRequest("生产线怎么升级"), false);
+});
+
+test("0.1.2 isReferentialImagePrompt：只剩指代词算指代，带真实内容的 不算", () => {
+assert.equal(isReferentialImagePrompt(extractImagePrompt("按照这个生成图片")), true);
+assert.equal(isReferentialImagePrompt("这个"), true);
+assert.equal(isReferentialImagePrompt("那张"), true);
+assert.equal(isReferentialImagePrompt("刚才那个"), true);
+assert.equal(isReferentialImagePrompt("一只猫"), false);
+assert.equal(isReferentialImagePrompt("这个风格的猫"), false);
+assert.equal(isReferentialImagePrompt(""), false);
 });

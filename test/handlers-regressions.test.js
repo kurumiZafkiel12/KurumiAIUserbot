@@ -824,6 +824,36 @@ test("0.1.1 带图+要生图：先识图拿描述，再走聊天调 generate_ima
   assert.ok(!all.includes("没有可调用的生图工具"), "不许再回没有生图工具");
 });
 
+test("0.1.2 「按照这个生成图片」引用描述时不走快线：模型拿被回复的描述调 generate_image", async () => {
+  const png = Buffer.alloc(600, 7).toString("base64");
+  let chatRounds = 0;
+  const f = fixture({
+    config: {
+      providers: [
+        { name: "default", model: "mock-model", baseURL: "https://offline.invalid/v1", apiKey: "x", dailyLimit: 0 },
+        { name: "imgone", model: "img-a", baseURL: "https://img.invalid/v1", apiKey: "y", dailyLimit: 0, image: true },
+      ],
+    },
+    deps: {
+      fetchImpl: async () => ({ ok: true, status: 200, json: async () => ({ data: [{ b64_json: png }] }) }),
+    },
+    model: (params) => {
+      chatRounds += 1;
+      if (chatRounds === 1) {
+        const sys = String(params.messages?.[0]?.content || "");
+        assert.ok(sys.includes("本轮特别指令"), "应注入指代消解指令");
+        assert.ok(sys.includes("蓝发女仆二次元插画"), "指令应带上被回复的描述原文");
+        return { choices: [{ message: { content: "", tool_calls: [{ id: "c1", type: "function", function: { name: "generate_image", arguments: JSON.stringify({ prompt: "蓝发女仆二次元插画，微笑" }) } }] } }] };
+      }
+      return { choices: [{ message: { content: "按你引用的描述画好了。" } }] };
+    },
+  });
+  const replyMsg = { id: 42, message: "蓝发女仆二次元插画，微笑，室内绿植背景", peerId: { userId: 999 } };
+  await f.handler(f.event("按照这个生成图片", { reply: replyMsg }));
+  assert.ok(f.modelCalls.length >= 1, "指代式生图应先经过聊天模型，而不是快线直生");
+  assert.equal(f.files.length, 1, "应按描述生成并发出一张图");
+});
+
 test("v0.9.24 系统提示含消息核实段：未证实不确认不编数字、旧知识不否定新事", async () => {
   const f = fixture();
   await f.handler(f.event("随便聊聊今天过得怎么样"));

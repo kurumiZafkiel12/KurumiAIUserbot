@@ -107,6 +107,18 @@ export function extractImagePrompt(question) {
   return out.replace(/^[\s，。：:、]+|[\s，。、]+$/g, "").trim();
 }
 
+/**
+ * 提取出的生图提示词是不是只剩一个指代词（「这个」「按照这个」「那张」）：
+ * 这类说法本身没有画面内容，指代的是上一条描述或被回复的那条消息。快线拿它
+ * 当提示词只会生成莫名其妙的图（实测拿「按照这个」生成出一张游戏广告海报），
+ * 应交给聊天模型结合上下文调用 generate_image。
+ */
+export function isReferentialImagePrompt(prompt) {
+  const t = String(prompt || "").replace(/[\s，。、！？!?；;：:]/g, "");
+  if (!t || t.length > 6) return false;
+  return /^(按照|照着|就按|就照)?(这个|那个|它|这张|那张|这幅|那幅|上面那个|刚才那个|前面那个)$/.test(t);
+}
+
 /** 构造 /images/generations 请求（纯函数）。 */
 export function buildImageGenRequest(provider, prompt) {
   const base = String((provider && provider.baseURL) || "").replace(/\/$/, "");

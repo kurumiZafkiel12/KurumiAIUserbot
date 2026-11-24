@@ -58,7 +58,7 @@ formatSearchContext,
 maskSearchKey,
 } from "./search.js";
 import { buildTtsRequest, pickVoiceName, cleanSpeechText, parseVoiceSwitch, voiceQueryKind} from "./tts.js";
-import { isImageGenRequest, extractImagePrompt, buildImageGenRequest, parseImageGenResponse} from "./imagegen.js";
+import { isImageGenRequest, extractImagePrompt, isReferentialImagePrompt, buildImageGenRequest, parseImageGenResponse} from "./imagegen.js";
 import { decideSplit, MAX_SPLIT_PARTS } from "./split.js";
 import { composeClockName, currentHHMM} from "./nameclock.js";
 import { toolGate, TOOLS_PROMPT_NOTE, executeTool, extractTextToolCalls, stripTextToolCalls, directToolCommand, mechanicalBulkRequest, bulkRefusalNote } from "./tools.js";
@@ -3063,6 +3063,16 @@ if (timer) clearTimeout(timer);
           return;
         }
         await handleVisionChat(msg, chatId, senderId, speakerName, parsed, photoSource, speakerUsername);
+        return;
+      }
+
+      // 生图说法但提示词只剩指代词（「按照这个生成图片」）：指代的是被回复的那条
+      // 描述/上一条回答，快线拿「按照这个」当提示词只会生成莫名其妙的图——交给
+      // 聊天模型结合上下文调 generate_image（把被回复的原文一并塞进本轮指令）。
+      if (isImageGenRequest(parsed.question) && isReferentialImagePrompt(extractImagePrompt(parsed.question))) {
+        const repliedText = repliedMsg && typeof repliedMsg.message === "string" ? repliedMsg.message.trim() : "";
+        const note = `【本轮特别指令】用户说要按「这个」生成图片，他回复的那条消息里就有现成的画面描述${repliedText ? `：「${repliedText.slice(0, 800)}」` : "（见对话历史里上一条描述）"}。请以这段描述为蓝本调用 generate_image 工具生成一张新图，不要用 find_photo 去网上找现成图，也不要拿「这个」这种指代词当提示词。`;
+        await handleChat(msg, chatId, senderId, speakerName, parsed, speakerUsername, note);
         return;
       }
 
