@@ -98,3 +98,9 @@ assert.equal(isReferentialImagePrompt("一只猫"), false);
 assert.equal(isReferentialImagePrompt("这个风格的猫"), false);
 assert.equal(isReferentialImagePrompt(""), false);
 });
+
+test("0.1.3 isReferentialImagePrompt：「按照这张照片」也算指代", () => {
+assert.equal(isReferentialImagePrompt(extractImagePrompt("按照这张照片生成一个照片")), true);
+assert.equal(isReferentialImagePrompt("这张照片"), true);
+assert.equal(isReferentialImagePrompt("这张照片里的猫"), false);
+});

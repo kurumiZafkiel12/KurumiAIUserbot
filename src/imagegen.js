@@ -116,7 +116,7 @@ export function extractImagePrompt(question) {
 export function isReferentialImagePrompt(prompt) {
   const t = String(prompt || "").replace(/[\s，。、！？!?；;：:]/g, "");
   if (!t || t.length > 6) return false;
-  return /^(按照|照着|就按|就照)?(这个|那个|它|这张|那张|这幅|那幅|上面那个|刚才那个|前面那个)$/.test(t);
+  return /^(按照|照着|就按|就照)?(这个|那个|它|这张照片|那张照片|这张图片|那张图片|这张|那张|这幅|那幅|上面那个|刚才那个|前面那个)$/.test(t);
 }
 
 /** 构造 /images/generations 请求（纯函数）。 */

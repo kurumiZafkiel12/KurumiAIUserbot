@@ -570,6 +570,11 @@ parts.push("【链接格式】先会分辨该不该带链接：闲聊、解释�
 // 把当天的真新闻否了（他 11 月 11 日真辞职过、当天真复职）。两头都是没有核实纪律：
 // 未证实的断言不许确认、不许编数字；旧知识也不许否定刚发生的事。
 parts.push("【消息核实】用户转述的新闻、消息、传闻（有消息称、据说、听说、网传这类）是待核实的说法，不是事实：只有本轮给你的资料明确支持时才能确认；没有资料支持时，不许顺着对方的话确认或展开，更不许编造涨幅、金额、时间、人数这类具体数字，就直说这个说法我没查证、或只搜到旧消息。反过来也不许凭旧知识否定刚发生的事：涉及今天、刚刚、最新的人事与事件变动，你的知识可能已经过期，资料没覆盖最新进展时只能说暂未查到，不许断言没这回事。");
+// 工具纪律段（v0.1.3）：茶话会实测——生图根本没被调用，模型却用人设话术连着
+// 两轮说「再等一小会儿，能画了马上给你」「工具又弹回来一句冷却中」，全是编的
+// （同期服务器日志里生图接口零调用、零失败）。不许编造工具结果、不许许诺稍后
+// 自动补做（它没有醒来自己干活的能力），追问进度必须先真调用一次再回答。
+parts.push("【工具纪律】工具结果只能来自本轮真实调用：没调用就不要描述工具的返回（不许说「工具弹回来说……」），调用失败就如实说失败和原因，不许编一个顺利的进展。你没有稍后自动补做的能力：做不到的事不要许诺，不许说「我盯着、能画了马上给你、过会儿自动发你」这类话；暂时做不了就直说现在做不了、请对方过几分钟再喊你。用户追问进度（「可以了吗」「好了吗」）而之前确有没做完的事时，先重新调用一次那个工具确认，再按真实结果回答，不许凭印象说还在处理中或还在冷却。");
 // 本轮特别指令（如刷量回绝）：调用方按本轮问题判定后注入，只对这一轮生效。
 if (extraNote) parts.push(extraNote);
 // 工具说明：告诉模型有哪些内置工具、实时数据必须先调工具（身份断言仍保持最末尾）。
@@ -2183,10 +2188,12 @@ if (timer) clearTimeout(timer);
   }
 
   /**
-   * 识图+生图组合（带图、又明确要生图）：先识图拿到画面描述，再把描述作为本轮
-   * 特别指令注入普通聊天——聊天模型在回复里描述、并调用 generate_image 按描述
-   * 生成新图。这类消息以前被识图通道整个吞掉：识图模型手里没有生图工具，只会
-   * 回「当前没有可调用的生图工具」，明明配了生图 API 却用不上（2026-11-24 茶话会实测）。
+   * 识图+生图组合（带图、又明确要生图）：先识图拿到画面描述并发给用户，再直接
+   * 拿描述走生图执行端出图——全程确定性，不经聊天模型裁量。走过两版弯路：
+   * v0.1.1 之前这类消息被识图通道整个吞掉，识图模型没有生图工具、只会回「没有
+   * 可调用的生图工具」；v0.1.1 改成把描述注入聊天让模型自己调 generate_image，
+   * 模型却用人设话术拖延、编造「工具说冷却中」（同期日志里生图接口零调用）。
+   * 用户把两步都说死了（描述 + 按描述生成），就由代码把两步做完。
    */
   async function handleVisionThenGen(msg, chatId, senderId, speakerName, parsed, photoMsg, speakerUsername) {
     if (isCoolingDown(senderId)) return;
@@ -2205,8 +2212,15 @@ if (timer) clearTimeout(timer);
       await editVisionFailure(msg, placeholder, res.error);
       return;
     }
-    const note = `【本轮特别指令】用户这条消息带了一张图片，还要求按图片生成新图。识图模型对这张图的描述是：「${res.answer}」。请这样处理：先在回复里用你自己的话把这张图描述一下，然后调用 generate_image 工具生成一张新图，提示词以这段描述为蓝本、只写画面内容（不要出现截图、边框、手机界面之类的话）。你是有 generate_image 工具可以用的，不要说没有生图工具。`;
-    await handleChat(msg, chatId, senderId, speakerName, parsed, speakerUsername, note, placeholder);
+    const description = res.answer;
+    afterAnswer(chatId, senderId, speakerName, parsed.question || "看看这张图并按描述生成图片", description);
+    try {
+      await sendAnswer(msg, placeholder, description, chatId);
+    } catch (err) {
+      logger.error(`发送识图描述失败（chat=${chatId}）：${err.message}`);
+    }
+    const genImpl = makeImageGenToolImpl(msg, chatId, senderId, speakerName, parsed.question, null, { skipAfterAnswer: true });
+    await genImpl(description);
   }
 
   /** 生图问答：命中生图说法时走生图提供方，生成结果以图片回复。 */
@@ -2330,14 +2344,14 @@ if (timer) clearTimeout(timer);
    * 「（生图中...）」，不再另发第二条占位（2026-11-24 群内实测两条占位并排，号主问
    * 「哪来的思考中」）；生成结束后不删不改它，最终回复由聊天管线编辑这同一条占位
    * 落地——顺序天然就是生完图再回。没传占位时才自发一条（自发自删，同旧行为）。 */
-  function makeImageGenToolImpl(msg, chatId, senderId, speakerName, question, chatPlaceholder) {
+  function makeImageGenToolImpl(msg, chatId, senderId, speakerName, question, chatPlaceholder, options = {}) {
     return async (prompt) => {
       const p = String(prompt || "").trim();
       if (!p) return "没给画面描述，没生成。";
       const provider = pool.firstImageProvider();
       if (!provider) return "当前没有可用的生图 API，没法生成。请如实告诉用户：需要号主先用 /ai 加生图api 添加。";
-      if (isCoolingDown(senderId)) return "用户操作太频繁、正在冷却中，这次没生成。";
-      if (!pool.reserve(provider)) return "生图模型暂时不可用（已达每日上限或冷却中），这次没生成。";
+      if (isCoolingDown(senderId)) return "用户操作太频繁、正在冷却中，这次没生成。如实告诉用户这次没生成。";
+      if (!pool.reserve(provider)) return "生图模型暂时不可用（已达每日上限或冷却中），这次没生成。如实告诉用户这次没生成、请过几分钟再喊你重试，不要承诺稍后自动补画。";
       let placeholder = chatPlaceholder || null;
       let ownPlaceholder = false;
       if (placeholder) {
@@ -2379,7 +2393,7 @@ if (timer) clearTimeout(timer);
         pool.markSuccess(provider);
         settled = true;
         usageStats.record(provider.model, null);
-        afterAnswer(chatId, senderId, speakerName, question, "（已按要求生成图片）");
+        if (!options.skipAfterAnswer) afterAnswer(chatId, senderId, speakerName, question, "（已按要求生成图片）");
         return "图片已经生成并发到当前会话里了。回复用户时简短确认即可，不要再说自己不会画图、发不了图。";
       } catch (err) {
         if (!settled) pool.release(provider);
@@ -2393,7 +2407,7 @@ if (timer) clearTimeout(timer);
           return `生图失败了（${err.message}），已经在会话里发了失败提示。`;
         }
         // 共用聊天占位时不抢着改它：最终回复（或全模型失败兜底）会编辑这条占位收尾。
-        return `生图失败了（${err.message}）。回复用户时如实说明失败，不要假装生成成功。`;
+        return `生图失败了（${err.message}）。回复用户时如实说明失败，不要假装生成成功，也不要承诺稍后自动补画，请让用户过几分钟再喊你重试。`;
       }
     };
   }
