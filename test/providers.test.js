@@ -3,7 +3,7 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
-import { ProviderPool } from "../src/providers.js";
+import { ProviderPool, displayModelName } from "../src/providers.js";
 
 const silentLogger = { info() {}, warn() {}, error() {} };
 
@@ -279,4 +279,15 @@ test("配置不完整的提供方被跳过时，日志只打安全字段、绝�
   assert.ok(!warns[0].includes(fakeKey), "日志里不能出现 apiKey 明文");
   assert.ok(warns[0].includes("bad"), "日志应包含提供方名字");
   assert.ok(warns[0].includes("model"), "日志应指明缺失字段名");
+});
+
+test("0.1.5 displayModelName：剥渠道前缀只留本体名", () => {
+  assert.equal(displayModelName("[满血F]gemini-3.8-flash"), "gemini-3.8-flash");
+  assert.equal(displayModelName("[premium]gemini-3-pro-preview"), "gemini-3-pro-preview");
+  assert.equal(displayModelName("[次]deepseek-v4.1-flash"), "deepseek-v4.1-flash");
+  assert.equal(displayModelName("[官逆B]gemini-3-pro-preview-thinking"), "gemini-3-pro-preview-thinking");
+  assert.equal(displayModelName("gpt-image-2"), "gpt-image-2");
+  assert.equal(displayModelName("deepseek-v4.1-flash"), "deepseek-v4.1-flash");
+  assert.equal(displayModelName(""), "");
+  assert.equal(displayModelName(null), "");
 });

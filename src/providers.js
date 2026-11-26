@@ -7,6 +7,16 @@ import OpenAI from "openai";
 import { DailyCounter } from "./limits.js";
 
 const FAILURE_COOLDOWN_MS = 30_000;
+
+/**
+ * 展示用模型名：剥掉中转站的渠道前缀（[满血F]、[premium]、[次]、[官逆B] 这类
+ * 方括号标签），只留模型本体名。回复末尾标注模型时用——号主只要名字，不要渠道。
+ */
+export function displayModelName(model) {
+  let s = String(model || "").trim();
+  while (/^\[[^\]]{1,24}\]/.test(s)) s = s.replace(/^\[[^\]]{1,24}\]\s*/, "").trim();
+  return s;
+}
 // 单次回复的输出 token 上限：没有上限时「从1数到10000」这类请求会一直生成到模型
 // 自身的硬顶，烧 token、刷屏、还污染上下文（2026-11-24 hyw 群实测）。4096 足够覆盖
 // 正常长答；接口不认 max_tokens 时 chat/visionChat 都会去掉它重试一次。
