@@ -363,7 +363,7 @@ test("K062-08 超长答案：首个编辑与流式部分文本相同（MESSAGE_N
   const placeholder = f.sends[0];
   assert.equal(f.sentState.get(placeholder.id), longAnswer.slice(0, 4000), "占位应停在答案前 4000 字");
   const tail = f.sends.slice(1).map((m) => m.message).join("");
-  assert.equal(tail, `${longAnswer.slice(4000)}\n（模型：mock-model）`, "超出上限的尾段必须续发（含末尾的模型标注行），不能丢");
+  assert.equal(tail, longAnswer.slice(4000), "超出上限的尾段必须续发，不能丢");
 });
 
 test("K062-08 人设分条：第一条与流式文本相同时，第二条不能被吞", async () => {
@@ -396,12 +396,12 @@ test("K062-09 迟到的流式编辑在最终答案之后落定，占位最终仍
   });
   await f.handler(f.event("你好", { sender: "333" }));
   const placeholder = f.sends[0];
-  assert.equal(f.sentState.get(placeholder.id), "部分加最终\n（模型：mock-model）", "最终答案先落定");
+  assert.equal(f.sentState.get(placeholder.id), "部分加最终", "最终答案先落定");
   releaseFirstEdit(); // 迟到的旧编辑此刻才落地，会先把占位覆盖回「部分」
   await new Promise((r) => setTimeout(r, 30));
   assert.equal(
     f.sentState.get(placeholder.id),
-    "部分加最终\n（模型：mock-model）",
+    "部分加最终",
     "迟到编辑落定后必须被代次纠正回最终答案，不能停在部分文本",
   );
 });
@@ -753,7 +753,7 @@ test("v0.9.22 生图 502 自动重试一次后成功，占位符是（生图中.
   await f.handler(f.event("画一张 猫"));
   assert.equal(calls, 2);
   assert.equal(f.files.length, 1);
-  assert.ok(f.sends.some((m) => m.message === "（生图中...）"));
+  assert.ok(f.sends.some((m) => m.message === "（生图中...）-img-a"), "生图占位带模型标注（v0.1.5 改版）");
 });
 
 test("v0.9.23 模型判定生图：正则没命中的说法经 generate_image 工具出图", async () => {
@@ -782,9 +782,9 @@ test("v0.9.23 模型判定生图：正则没命中的说法经 generate_image �
   const ph = f.sends.find((m) => m.message === "（思考中...）");
   assert.ok(ph, "应先发聊天占位");
   assert.ok(!f.sends.some((m) => m.message === "（生图中...）"), "不应另发第二条生图占位");
-  const genIdx = f.edits.findIndex((e) => e.message === ph.id && e.text === "（生图中...）");
-  const ansIdx = f.edits.findIndex((e) => e.message === ph.id && e.text === "画好了。\n（模型：mock-model）");
-  assert.ok(genIdx >= 0, "生图时应把聊天占位改成（生图中...）");
+  const genIdx = f.edits.findIndex((e) => e.message === ph.id && e.text === "（生图中...）-img-a");
+  const ansIdx = f.edits.findIndex((e) => e.message === ph.id && e.text === "画好了。");
+  assert.ok(genIdx >= 0, "生图时应把聊天占位改成（生图中...）-模型名");
   assert.ok(ansIdx > genIdx, "最终回复应落在同一条占位上、且在生图之后");
 });
 
@@ -873,7 +873,7 @@ test("0.1.4 模型列表取消 50 上限：全量分条列出、50 名开外也�
   assert.match(all2, /model-number-119/);
 });
 
-test("0.1.5 回复标注模型：聊天带（模型：X）、渠道前缀剥掉、标注不进上下文", async () => {
+test("0.1.5 模型标注在占位上：聊天占位变「（思考中...）-模型名」、回复内容不带标注", async () => {
   const f = fixture({
     config: {
       providers: [
@@ -883,16 +883,14 @@ test("0.1.5 回复标注模型：聊天带（模型：X）、渠道前缀剥掉�
     answer: "你好呀。",
   });
   await f.handler(f.event("你好"));
-  const all = [...f.sends.map((m) => m.message), ...f.edits.map((e) => e.text)].join("\n");
-  assert.ok(all.includes("（模型：gemini-3.8-flash）"), "聊天回复应标注剥前缀后的模型名");
-  assert.ok(!all.includes("满血"), "标注里不许带渠道前缀");
-  await f.handler(f.event("再说一句"));
-  const secondCall = f.modelCalls[f.modelCalls.length - 1];
-  const historyText = (secondCall.messages || []).map((m) => (typeof m.content === "string" ? m.content : "")).join("\n");
-  assert.ok(!historyText.includes("（模型："), "标注只出现在发送文本里，不许存进上下文让模型学");
+  const editTexts = f.edits.map((e) => e.text);
+  assert.ok(editTexts.includes("（思考中...）-gemini-3.8-flash"), "尝试开始时占位应标上剥前缀后的模型名");
+  assert.ok(!editTexts.join("\n").includes("满血"), "标注里不许带渠道前缀");
+  const finalText = editTexts[editTexts.length - 1];
+  assert.equal(finalText, "你好呀。", "最终回复内容就是答案本身，不带标注");
 });
 
-test("0.1.5 识图与生图标注模型：识图回复带（识图模型：X）、生图图片说明带（生图模型：X）", async () => {
+test("0.1.5 识图与生图的模型标注在占位上：识图占位带模型名、生图占位带模型名、内容与图片说明不带标注", async () => {
   const png = Buffer.alloc(600, 7).toString("base64");
   const f = fixture({
     config: {
@@ -913,10 +911,13 @@ test("0.1.5 识图与生图标注模型：识图回复带（识图模型：X）�
     },
   });
   await f.handler(f.event("看看这张图，描述一下并按照描述生成图片", { photo: true }));
-  const all = [...f.sends.map((m) => m.message), ...f.edits.map((e) => e.text)].join("\n");
-  assert.ok(all.includes("（识图模型：vision-x）"), "识图描述应标注剥前缀后的识图模型");
+  const editTexts = f.edits.map((e) => e.text);
+  assert.ok(editTexts.includes("（思考中...）-vision-x"), "识图开始时占位应标上剥前缀后的识图模型");
+  assert.ok(f.sends.some((m) => m.message === "（生图中...）-img-a"), "生图占位应标上剥前缀后的生图模型");
+  const all = [...f.sends.map((m) => m.message), ...editTexts].join("\n");
+  assert.ok(!all.includes("（识图模型：") && !all.includes("（生图模型："), "标注不许进回复内容或图片说明");
   assert.equal(f.files.length, 1, "应生成一张图");
-  assert.equal(f.files[0].caption, "（生图模型：img-a）", "生图图片说明应标注剥前缀后的生图模型");
+  assert.equal(f.files[0].caption, undefined, "生成的图片不带说明标注");
 });
 
 test("0.1.4 web_search 工具：模型能自己联网搜，工具通道的结果真送达模型", async () => {
@@ -1020,8 +1021,7 @@ test("0.0.3 群里分条最多 3 条且每条都带引用，私聊仍 5 条", as
   assert.equal(gParts.length, 2, "群里补发 2 条（加占位编辑共 3 条封顶）");
   assert.ok(gParts.every((s) => s.replyTo === 10), "后续条带引用（v0.0.3 恢复）");
   const gTail = gParts.find((s) => s.message.includes("第3行小故事"));
-  assert.ok(gTail && gTail.message.split("\n").length === 5, "群尾条应并入剩余 4 行故事 + 末尾模型标注行");
-  assert.ok(gTail && gTail.message.includes("（模型：mock-model）"), "尾条末尾带模型标注");
+  assert.ok(gTail && gTail.message.split("\n").length === 4, "群尾条应并入剩余 4 行");
   const d = fixture({
     config: { systemPrompt: "自定义人设。", systemPromptIsDefault: false },
     answer: story,

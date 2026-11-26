@@ -2155,7 +2155,7 @@ if (timer) clearTimeout(timer);
    * { error }（pool-empty / download-failed / all-failed）。只负责问出答案，
    * 发送由调用方处理——识图直答与「识图+生图」组合流程共用这一份。
    */
-  async function queryVisionAnswer(msg, chatId, senderId, speakerName, photoMsg, question, speakerUsername) {
+  async function queryVisionAnswer(msg, chatId, senderId, speakerName, photoMsg, question, speakerUsername, onPick) {
     const items = flattenVisionPool(config.visionPool).filter((it) => {
       const e = pool.getByName(it.apiName);
       return e && !e.disabled && !e.image;
@@ -2188,7 +2188,6 @@ if (timer) clearTimeout(timer);
     /** @type {Set<string>} 预留失败（限额已满/失败冷却中）的 API 名：本轮整体跳过 */
     const blockedApis = new Set();
     let answer = null;
-    let usedModel = null;
     while (!answer) {
       const candidates = items.filter(
         (it) => !tried.has(`${it.apiName}::${it.model}`) && !blockedApis.has(it.apiName),
@@ -2202,6 +2201,15 @@ if (timer) clearTimeout(timer);
         blockedApis.add(pick.apiName);
         continue;
       }
+      // 识图模型标注在占位上（号主定版）：每次真开始调一个模型就回调一次，
+      // 调用方把占位改成「（思考中...）-模型名」；失败换下一个时随之更新。
+      if (onPick) {
+        try {
+          onPick(pick.model);
+        } catch {
+          // 标注回调出错不影响识图本身。
+        }
+      }
       tried.add(`${pick.apiName}::${pick.model}`);
       try {
         let seenUsage = null;
@@ -2209,7 +2217,6 @@ if (timer) clearTimeout(timer);
           seenUsage = u;
         });
         answer = text;
-        usedModel = pick.model;
         pool.markSuccess(entry);
         usageStats.record(pick.model, seenUsage);
       } catch (err) {
@@ -2219,7 +2226,7 @@ if (timer) clearTimeout(timer);
     }
 
     if (!answer) return { error: "all-failed" };
-    return { answer: scrubSecrets(answer, collectSecrets(config)), model: usedModel };
+    return { answer: scrubSecrets(answer, collectSecrets(config)) };
   }
 
   /** 识图失败时把占位消息改成对应的失败文案（识图直答与组合流程共用）。 */
@@ -2253,7 +2260,10 @@ if (timer) clearTimeout(timer);
     const placeholder = await sendPlaceholder(msg, chatId);
     if (!placeholder) return;
 
-    const res = await queryVisionAnswer(msg, chatId, senderId, speakerName, photoMsg, question, speakerUsername);
+    const res = await queryVisionAnswer(msg, chatId, senderId, speakerName, photoMsg, question, speakerUsername, (model) => {
+      const tag = displayModelName(model);
+      if (tag) editPlaceholderText(msg.peerId, placeholder.id, `${PLACEHOLDER_TEXT}-${tag}`).catch(() => {});
+    });
     if (res.error) {
       await editVisionFailure(msg, placeholder, res.error);
       return;
@@ -2261,11 +2271,8 @@ if (timer) clearTimeout(timer);
 
     const clean = res.answer;
     afterAnswer(chatId, senderId, speakerName, question, clean);
-    // 识图回复标注模型（号主定版）：只在发送文本上加，存入上下文的仍是干净答案。
-    const visionTag = displayModelName(res.model);
-    const sendText = visionTag ? `${clean}\n（识图模型：${visionTag}）` : clean;
     try {
-      await sendAnswer(msg, placeholder, sendText, chatId);
+      await sendAnswer(msg, placeholder, clean, chatId);
     } catch (err) {
       logger.error(`发送识图答案失败（chat=${chatId}）：${err.message}`);
     }
@@ -2292,6 +2299,10 @@ if (timer) clearTimeout(timer);
       photoMsg,
       "请详细描述这张图片的画面内容（主体、人物外观、服装、表情、场景、风格、色调），只描述画面本身，不要提及截图、边框、手机或聊天软件界面。",
       speakerUsername,
+      (model) => {
+        const tag = displayModelName(model);
+        if (tag) editPlaceholderText(msg.peerId, placeholder.id, `${PLACEHOLDER_TEXT}-${tag}`).catch(() => {});
+      },
     );
     if (res.error) {
       await editVisionFailure(msg, placeholder, res.error);
@@ -2299,10 +2310,8 @@ if (timer) clearTimeout(timer);
     }
     const description = res.answer;
     afterAnswer(chatId, senderId, speakerName, parsed.question || "看看这张图并按描述生成图片", description);
-    const visionTag = displayModelName(res.model);
-    const sendText = visionTag ? `${description}\n（识图模型：${visionTag}）` : description;
     try {
-      await sendAnswer(msg, placeholder, sendText, chatId);
+      await sendAnswer(msg, placeholder, description, chatId);
     } catch (err) {
       logger.error(`发送识图描述失败（chat=${chatId}）：${err.message}`);
     }
@@ -2359,7 +2368,8 @@ if (timer) clearTimeout(timer);
       return;
     }
 
-    const placeholder = await sendPlaceholder(msg, chatId, "（生图中...）");
+    const genTag = displayModelName(provider.model);
+    const placeholder = await sendPlaceholder(msg, chatId, genTag ? `（生图中...）-${genTag}` : "（生图中...）");
     if (!placeholder) {
       pool.release(provider);
       return;
@@ -2390,8 +2400,7 @@ if (timer) clearTimeout(timer);
       const tmp = path.join(os.tmpdir(), `img_${Date.now()}_${Math.floor(Math.random() * 100000)}.png`);
       fs.writeFileSync(tmp, buf);
       try {
-        const imgTag = displayModelName(provider.model);
-        await client.sendFile(msg.peerId, { file: tmp, replyTo: msg.id, caption: imgTag ? `（生图模型：${imgTag}）` : undefined });
+        await client.sendFile(msg.peerId, { file: tmp, replyTo: msg.id });
       } finally {
         try {
           fs.unlinkSync(tmp);
@@ -2442,14 +2451,17 @@ if (timer) clearTimeout(timer);
       if (!pool.reserve(provider)) return "生图模型暂时不可用（已达每日上限或冷却中），这次没生成。如实告诉用户这次没生成、请过几分钟再喊你重试，不要承诺稍后自动补画。";
       let placeholder = chatPlaceholder || null;
       let ownPlaceholder = false;
+      // 生图模型同样标在占位上（号主定版）：「（生图中...）-模型名」，不写进图片说明。
+      const genTag = displayModelName(provider.model);
+      const genPlaceholderText = genTag ? `（生图中...）-${genTag}` : "（生图中...）";
       if (placeholder) {
         try {
-          await client.editMessage(msg.peerId, { message: placeholder.id, text: "（生图中...）" });
+          await client.editMessage(msg.peerId, { message: placeholder.id, text: genPlaceholderText });
         } catch {
           // 占位改不动就留着「思考中」，不影响生成本身。
         }
       } else {
-        placeholder = await sendPlaceholder(msg, chatId, "（生图中...）");
+        placeholder = await sendPlaceholder(msg, chatId, genPlaceholderText);
         ownPlaceholder = true;
         if (!placeholder) {
           pool.release(provider);
@@ -2463,9 +2475,7 @@ if (timer) clearTimeout(timer);
         const tmp = path.join(os.tmpdir(), `img_${Date.now()}_${Math.floor(Math.random() * 100000)}.png`);
         fs.writeFileSync(tmp, buf);
         try {
-          // 生图图片标注模型（号主定版）：写进图片说明，渠道前缀剥掉只留本体名。
-          const imgTag = displayModelName(provider.model);
-          await client.sendFile(msg.peerId, { file: tmp, replyTo: msg.id, caption: imgTag ? `（生图模型：${imgTag}）` : undefined });
+          await client.sendFile(msg.peerId, { file: tmp, replyTo: msg.id });
         } finally {
           try {
             fs.unlinkSync(tmp);
@@ -2668,6 +2678,11 @@ if (timer) clearTimeout(timer);
       preferred = null; // 优先项只用一次，之后按权重挑
       if (!entry) break;
       tried.add(entry.name);
+      // 模型标注（号主定版）：不写进回复内容，而是标在占位上——「（思考中...）-模型名」，
+      // 渠道前缀剥掉只留本体名。走 trackStreamingEdit 的代次通道：迟到落定会被最终
+      // 答案纠正回来，不会把答案覆盖回占位；换提供方重试时随之换成新模型名。
+      const attemptTag = displayModelName(entry.model);
+      if (attemptTag) trackStreamingEdit(`${PLACEHOLDER_TEXT}-${attemptTag}`);
       try {
         let seenUsage = null;
         let text = null;
@@ -2769,18 +2784,13 @@ if (timer) clearTimeout(timer);
     // 防止模型把 key 样式的字符串编进回复里吓人。
     const clean = scrubSecrets(answer, secrets);
 
-    // 回复标注模型（号主定版）：发送文本末尾加一行「（模型：X）」，X 剥掉渠道
-    // 前缀只留本体名。存入上下文的仍是干净答案，免得模型学着自己编标注。
-    const chatTag = usedEntry ? displayModelName(usedEntry.model) : "";
-    const sendText = chatTag ? `${clean}\n（模型：${chatTag}）` : clean;
-
     // 流式收尾：关通道并记下最终占位文本（与 sendAnswer 的分条判定保持一致），
     // 供 trackStreamingEdit 的代次纠正使用（审计 K062-09）。
     streamClosed = true;
     finalGen = ++editGen;
     {
-      const finalParts = decideSplit(sendText, { personaMode: isPersonaMode(), maxParts: splitMaxPartsFor(msg, chatId) });
-      finalPlaceholderText = (finalParts.length <= 1 ? sendText : finalParts[0]).slice(0, TG_MESSAGE_LIMIT);
+      const finalParts = decideSplit(clean, { personaMode: isPersonaMode(), maxParts: splitMaxPartsFor(msg, chatId) });
+      finalPlaceholderText = (finalParts.length <= 1 ? clean : finalParts[0]).slice(0, TG_MESSAGE_LIMIT);
     }
 
     // 保存上下文（问题 + 脱敏后的回答），下次提问能接上话。
@@ -2788,7 +2798,7 @@ if (timer) clearTimeout(timer);
 
     // 最终答案：人设模式闲聊分条发、其余整条发（sendAnswer 内部判定）。
     try {
-      await sendAnswer(msg, placeholder, sendText, chatId);
+      await sendAnswer(msg, placeholder, clean, chatId);
     } catch (err) {
       logger.error(`发送最终答案失败（chat=${chatId}，模型=${usedEntry.name}）：${err.message}`);
     }
