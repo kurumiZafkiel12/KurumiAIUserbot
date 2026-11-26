@@ -855,6 +855,76 @@ test("0.1.2 「按照这个生成图片」引用描述时不走快线：模型�
   assert.equal(f.files.length, 1, "应按描述生成并发出一张图");
 });
 
+test("0.1.4 模型列表取消 50 上限：全量分条列出、50 名开外也能回序号选", async () => {
+  const f = fixture();
+  const ids = Array.from({ length: 120 }, (_, i) => `model-number-${i + 1}-with-a-fairly-long-name`);
+  f.pool.entries[0].client.models.list = async () => ({ data: ids.map((id) => ({ id })) });
+  await f.handler(f.event("/ai 换模型"));
+  await f.handler(f.event("1"));
+  const all = f.sends.map((m) => m.message).join("\n");
+  assert.ok(all.includes("120. model-number-120"), "最后一个模型也应列出");
+  assert.ok(all.includes("（共 120 个"), "应注明总数");
+  assert.ok(!all.includes("只列前"), "不应再有只列前 50 的说法");
+  const listMsgs = f.sends.filter((m) => String(m.message).includes("model-number-"));
+  assert.ok(listMsgs.length >= 2, "长列表应分成多条发");
+  for (const m of listMsgs) assert.ok(String(m.message).length <= 4096, "每条不超 Telegram 上限");
+  await f.handler(f.event("119"));
+  const all2 = f.sends.map((m) => m.message).join("\n");
+  assert.match(all2, /model-number-119/);
+});
+
+test("0.1.4 web_search 工具：模型能自己联网搜，工具通道的结果真送达模型", async () => {
+  const mdFor = (snippet) =>
+    [
+      "## Search Results",
+      "1. ",
+      "news.example.comhttps://news.example.com",
+      "",
+      "### 陈吉宁涉嫌严重违纪违法正接受审查调查",
+      "[https://news.example.com/a1](https://news.example.com/a1)",
+      "",
+      snippet,
+    ].join("\n");
+  let chatRounds = 0;
+  const f = fixture({
+    config: { searchProvider: "lightpanda" },
+    deps: {
+      // 自动注入（改写后的查询带「新华社」）与工具通道（模型自拟查询）返回不同片段，
+      // 以便区分结果到底经哪条路送达。
+      lightpandaFetch: async (bin, url) =>
+        decodeURIComponent(String(url)).includes("新华社") ? mdFor("自动注入片段") : mdFor("工具通道独家片段：陈吉宁正接受中央纪委国家监委审查调查。"),
+    },
+    model: (params) => {
+      const msgs = params.messages || [];
+      const allText = msgs.map((m) => (typeof m.content === "string" ? m.content : "")).join("\n");
+      // 搜索改写走流式 pool.chat：按流式回查询词（回普通对象会让改写失败、还把唯一提供方打进冷却）。
+      if (msgs[0] && String(msgs[0].content || "").includes("改写成一句给搜索引擎的查询词")) {
+        if (params.stream) {
+          return (async function* () {
+            yield { choices: [{ delta: { content: "陈吉宁被查 新华社" } }] };
+          })();
+        }
+        return { choices: [{ message: { content: "陈吉宁被查 新华社" } }] };
+      }
+      chatRounds += 1;
+      if (params.tools && chatRounds === 1) {
+        return { choices: [{ message: { content: "", tool_calls: [{ id: "c1", type: "function", function: { name: "web_search", arguments: JSON.stringify({ query: "陈吉宁被查" }) } }] } }] };
+      }
+      if (params.tools) assert.ok(allText.includes("工具通道独家片段"), "第二轮应收到 web_search 工具送回的结果");
+      const finalText = "搜到了：陈吉宁正接受审查调查。";
+      if (params.stream) {
+        return (async function* () {
+          yield { choices: [{ delta: { content: finalText } }] };
+        })();
+      }
+      return { choices: [{ message: { content: finalText } }] };
+    },
+  });
+  await f.handler(f.event("陈吉宁被查是咋回事，搜一下"));
+  const all = [...f.sends.map((m) => m.message), ...f.edits.map((e) => e.text)].join("\n");
+  assert.match(all, /正接受审查调查/);
+});
+
 test("v0.9.24 系统提示含消息核实段：未证实不确认不编数字、旧知识不否定新事", async () => {
   const f = fixture();
   await f.handler(f.event("随便聊聊今天过得怎么样"));

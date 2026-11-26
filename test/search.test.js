@@ -250,3 +250,16 @@ assert.ok(out.includes("不许拿旧资料当现状"), "须含旧资料不当现
 assert.ok(out.includes("更不许断言事情没发生"), "须含不断言没发生");
 assert.ok(out.includes("以资料为准"), "须含资料优先于旧知识");
 });
+
+test("0.1.4 cleanSearchQuery：「去浏览器搜呀」剥干净、只剩语气词按空", () => {
+assert.equal(cleanSearchQuery("去浏览器搜呀"), "");
+assert.equal(cleanSearchQuery("去浏览器搜陈吉宁"), "陈吉宁");
+assert.equal(cleanSearchQuery("去搜"), "");
+});
+
+test("0.1.4 planSearch：纯指令句拿上文话题兜底搜，不再被短消息规则拦掉、也不拿指令当查询词", () => {
+assert.deepEqual(planSearch("去搜", { provider: "lightpanda", hasHistory: true, fallbackQuery: "陈吉宁被查是咋回事" }), { mode: "lightpanda", query: "陈吉宁被查是咋回事" });
+assert.deepEqual(planSearch("去浏览器搜呀", { provider: "lightpanda", hasHistory: true, fallbackQuery: "陈吉宁被查是咋回事" }), { mode: "lightpanda", query: "陈吉宁被查是咋回事" });
+assert.equal(planSearch("去搜", { provider: "lightpanda", hasHistory: true, fallbackQuery: "去搜" }), null);
+assert.equal(planSearch("抽", { provider: "lightpanda", hasHistory: true, fallbackQuery: "塔罗牌" }), null);
+});

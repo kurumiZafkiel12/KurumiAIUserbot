@@ -1013,6 +1013,15 @@ export async function findPhotoTool(query, ctx) {
 
 /** 生图工具：执行端由 handlers 经 ctx.imageGen 注入（选提供方、占位、生成、发图都在那边），
  * 这里只转交画面描述并原样带回结果。 */
+export async function webSearchTool(query, ctx) {
+  const q = String(query || "").trim();
+  if (!q) throw new Error("要给搜索关键词");
+  if (!ctx || typeof ctx.webSearch !== "function") return "联网搜索通道未启用，这边搜不了。";
+  const text = await ctx.webSearch(q);
+  if (!text) return `没有搜到与「${q}」相关的内容（搜索引擎没有返回可用结果）。如实告诉用户没搜到，不要编造内容。`;
+  return text;
+}
+
 export async function generateImageTool(prompt, ctx) {
   const p = String(prompt || "").trim();
   if (!p) throw new Error("要给画面描述");
@@ -1169,7 +1178,8 @@ const NUM = { type: "number"};
 export const TOOL_DEFS = [
 { name: "get_weather", description: "查某个城市的实时天气和未来 3 天预报。用户问天气、气温、下不下雨时调用。", parameters: S({ city: STR}, ["city"]), run: (a) => weatherTool(a.city)},
 { name: "translate_text", description: "把一段文字翻译成另一种语言（多源自动切换）。用户要翻译时调用；target 用语言代码如 zh-CN、en、ja、ko。", parameters: S({ text: STR, target: STR, source: STR}, ["text"]), run: (a) => translateTool(a.text, a.target, a.source)},
-{ name: "hot_list", description: "查热搜热榜。用户问新闻、热点、头条时也用它（默认 baidu）。source 取 baidu（百度热搜）、weibo（微博热搜）、douyin（抖音热榜）、bilibili（B站热门视频）。", parameters: S({ source: STR}, ["source"]), run: (a) => hotListTool(a.source)},
+{ name: "hot_list", description: "查热搜热榜（只有榜单标题、没有正文）。用户问现在有什么热点、热搜上有什么时用它（默认 baidu）。source 取 baidu（百度热搜）、weibo（微博热搜）、douyin（抖音热榜）、bilibili（B站热门视频）。用户问某个具体新闻事件的详情时不要只靠它，用 web_search 搜正文。", parameters: S({ source: STR}, ["source"]), run: (a) => hotListTool(a.source)},
+{ name: "web_search", description: "联网搜索网页：查新闻事件、实时信息、资料，返回结果摘要（标题+链接+内容片段）。用户问最新消息、某个事件的具体情况，或明确让你搜/查一下时调用。query 填搜索关键词（如「陈吉宁被查 新华社」），不要填整句口语、不要填「去浏览器搜」这类指令词本身。", parameters: S({ query: STR }, ["query"]), run: (a, ctx) => webSearchTool(a.query, ctx) },
 { name: "github_search", description: "在 GitHub 上按关键词搜索仓库，返回星标靠前的结果。", parameters: S({ query: STR}, ["query"]), run: (a) => githubSearchTool(a.query)},
 { name: "exchange_rate", description: "查汇率或换算货币。币种用三字母代码（USD、CNY、JPY、EUR、GBP、HKD 等）；给了 amount 就换算金额。", parameters: S({ from: STR, to: STR, amount: NUM}, ["from", "to"]), run: (a) => exchangeRateTool(a.from, a.to, a.amount)},
 { name: "crypto_price", description: "查加密货币价格（美元+人民币+24h 涨跌）。coins 是币种符号，逗号分隔，如 BTC,ETH。", parameters: S({ coins: STR}, ["coins"]), run: (a) => cryptoPriceTool(a.coins)},
@@ -1250,6 +1260,7 @@ const GATE_WORDS = [
 "github", "仓库", "时区", "几点", "现在时间", "电影", "上映", "汇率换算", "升国旗",
 "照片", "图片", "壁纸", "长什么样", "发张", "来张", "看看图", "看图",
 "生图", "生成", "生产", "实景照", "画一张", "画个", "画只", "做一张", "生成一张",
+"搜一下", "查一下", "去搜", "去查", "搜搜", "联网",
 ];
 
 /** 问题是否可能需要工具（粗筛，宁宽勿漏；模型不用工具时这一轮就退化成普通非流式回答）。 */
@@ -1298,5 +1309,5 @@ export function stripTextToolCalls(text) {
 
 /** 注入系统提示的工具说明（放在发言者断言之前，不抢占末尾断言的位置）。 */
 export const TOOLS_PROMPT_NOTE =
-"你有一组内置工具可以调用（查天气、翻译、热搜热榜、汇率、币价、金价、油价、票房、豆瓣电影、百科、IP 归属、一言、诗词、图书、二维码、短网址还原、编解码、哈希、进制/单位换算、日期计算、随机数、密码生成、字数统计、颜色换算、抽签、掷骰子、抛硬币、塔罗、星座运势、黄历、世界时间、设定时提醒、待办清单、GitHub 仓库搜索、搜图发图、生图）。用户想看某个人物/东西的照片或图片时，调用搜图发图工具把图发出去，不要只回文字描述。" +
-"用户的问题需要实时数据、精确计算或这些功能时，先调用工具拿到结果再回答，不许凭记忆编造实时数据（天气、价格、热榜、票房尤其不许编）。工具返回失败或不可用时，如实告诉用户暂时查不到，不要用假数据糊弄。设提醒、记待办这类会落盘的功能，必须真的调用工具才算数：没调用工具、或工具没返回成功，绝不许声称已经设好、记好或存好。工具只能通过系统提供的调用机制使用，绝不要在回复正文里写 <tool_call> 标记或工具调用的 JSON。你可以 @ 当前说话人：他的用户名写在系统提示的发言者信息里，在回复正文里写 @用户名 就能 @ 到他；设定时提醒到点也会自动 @ 设定者。这些都是真能用的功能，不要声称 @ 不了、不知道对方用户名、或定时提醒没调通、用不了。你能生图：用户让你画/生成一张新图片时调用生图工具（generate_image），想看现成已有的照片才用搜图发图（find_photo），不要声称自己不会画图、发不了图。";
+"你有一组内置工具可以调用（查天气、翻译、热搜热榜、联网搜索、汇率、币价、金价、油价、票房、豆瓣电影、百科、IP 归属、一言、诗词、图书、二维码、短网址还原、编解码、哈希、进制/单位换算、日期计算、随机数、密码生成、字数统计、颜色换算、抽签、掷骰子、抛硬币、塔罗、星座运势、黄历、世界时间、设定时提醒、待办清单、GitHub 仓库搜索、搜图发图、生图）。用户想看某个人物/东西的照片或图片时，调用搜图发图工具把图发出去，不要只回文字描述。" +
+"用户的问题需要实时数据、精确计算或这些功能时，先调用工具拿到结果再回答，不许凭记忆编造实时数据（天气、价格、热榜、票房尤其不许编）。问新闻、事件详情，或用户明确让你去搜时，调用联网搜索工具（web_search）真搜：热搜榜只有标题、没有正文，不能拿它当新闻内容；没真搜到就直说没搜到，不许编造搜索过程和结果。工具返回失败或不可用时，如实告诉用户暂时查不到，不要用假数据糊弄。设提醒、记待办这类会落盘的功能，必须真的调用工具才算数：没调用工具、或工具没返回成功，绝不许声称已经设好、记好或存好。工具只能通过系统提供的调用机制使用，绝不要在回复正文里写 <tool_call> 标记或工具调用的 JSON。你可以 @ 当前说话人：他的用户名写在系统提示的发言者信息里，在回复正文里写 @用户名 就能 @ 到他；设定时提醒到点也会自动 @ 设定者。这些都是真能用的功能，不要声称 @ 不了、不知道对方用户名、或定时提醒没调通、用不了。你能生图：用户让你画/生成一张新图片时调用生图工具（generate_image），想看现成已有的照片才用搜图发图（find_photo），不要声称自己不会画图、发不了图。";

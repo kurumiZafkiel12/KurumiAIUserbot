@@ -46,6 +46,7 @@ const LOCAL_ONLY_KEYWORDS = [
 // 查询词，引擎会按指令词分词（「去网上搜kazumi」被按「去」搜出字典页）。剥掉开头的
 // 指令短语，只留真正要搜的内容；整句只剩指令时返回空串，交给话题兜底。
 const SEARCH_INSTRUCTION_PREFIXES = [
+"去浏览器搜", "去浏览器查", "用浏览器搜", "浏览器搜", "浏览器查",
 "去网上搜", "上网搜", "网上搜", "帮我搜索", "帮忙搜", "帮我搜", "搜索一下", "搜一下", "搜搜",
 "去搜", "去查", "帮我查", "查一下", "查查", "介绍一下", "介绍下", "讲一讲", "讲讲", "说说", "一下",
 ];
@@ -68,6 +69,8 @@ q = stripped;
 changed = true;
 }
 }
+// 剥完只剩语气词（「去浏览器搜呀」→「呀」）：等于没主题，按空处理、走话题兜底。
+if (/^[呀啊吧呗哦啦呢么]+$/.test(q)) return "";
 return q;
 }
 
@@ -94,18 +97,22 @@ if (q.includes("联网搜索")) {
 const query = cleanSearchQuery(q) || cleanSearchQuery(options.fallbackQuery || "");
 return { mode: viaLightpanda ? "lightpanda" : "tavily", query: query || q };
 }
+const query = cleanSearchQuery(q);
+// 整句只剩指令词（「去搜」「去浏览器搜呀」）：用户是在催着搜，主题在上文里——
+// 拿话题兜底搜，排在短消息拦截之前。茶话会实测旧顺序的两个坑：「去搜」被短消息
+// 规则拦掉、模型只能拿热搜榜标题凑数；「去浏览器搜呀」剥不干净、被当查询词
+// 本人搜出一堆搜索引擎首页（2026-11-24）。
+if (!query) {
+const fallback = cleanSearchQuery(options.fallbackQuery || "");
+return fallback ? { mode, query: fallback } : null;
+}
 // 短消息续聊不搜（v0.9.18）：「抽」「好」「再来一个」这类 4 字内的短回复几乎都是
 // 接上文（机器人刚问「要抽几张玩吗」），拿去搜只会带回字典/百科把对话劫持了
 // （群内实测：Pawn 答「抽」被当成查字典）。有会话历史时跳过搜索，交给模型结合
 // 上文回答；无历史的首条短消息照常搜。显式「联网搜索」已在上面先行放行。
 if (options.hasHistory && q.length <= 4) return null;
 if (LOCAL_ONLY_KEYWORDS.some((k) => q.includes(k))) return null;
-const query = cleanSearchQuery(q);
-if (query) return { mode, query };
-// 整句只剩指令词（如单独一句「去网上搜」）：拿上一条用户问题当主题搜。
-const fallback = cleanSearchQuery(options.fallbackQuery || "");
-if (fallback) return { mode, query: fallback };
-return null;
+return { mode, query };
 }
 
 /** 构造 Serper 请求（纯函数）。 */

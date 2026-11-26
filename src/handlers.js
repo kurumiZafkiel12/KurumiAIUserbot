@@ -41,6 +41,7 @@ import { createApiClient as defaultCreateApiClient } from "./providers.js";
 import { GroupRecords, renderRecords} from "./records.js";
 import {
 planSearch,
+cleanSearchQuery,
 buildSerperRequest,
 parseSerperResults,
 buildTavilyRequest,
@@ -299,6 +300,51 @@ if (config.searchProvider !== "lightpanda") return [];
 const md = await lightpandaFetch(config.lightpandaBin, buildYahooImageSearchUrl(query));
 return parseYahooImageResults(md);
 };
+// 联网搜索执行器（给 web_search 工具经 ctx 注入）：与自动注入同一套引擎链
+// （Yahoo → Brave → Bing）和同一份 15 分钟缓存，返回结果摘要文本；搜不到返回
+// 空串（工具会如实回没搜到）。此前模型手里没有搜索工具：自动注入没触发时，
+// 被用户催着搜只能拿热搜榜的标题凑数、甚至编造搜索过程（2026-11-24 茶话会实测）。
+const webSearchImpl = async (query) => {
+const q = cleanSearchQuery(query) || String(query || "").trim();
+if (!q) return "";
+if (config.searchProvider === "lightpanda") {
+const cacheKey = `lightpanda:${q.toLowerCase()}`;
+const cached = searchCache.get(cacheKey);
+if (cached && Date.now() - cached.at < SEARCH_CACHE_TTL_MS) return cached.text;
+let result = { text: "", urls: [] };
+for (const attempt of [
+async () => parseYahooMarkdown(await lightpandaFetch(config.lightpandaBin, buildYahooSearchUrl(q))),
+async () => parseBraveMarkdown(await lightpandaFetch(config.lightpandaBin, buildBraveSearchUrl(q))),
+async () => parseBingMarkdown(await lightpandaFetch(config.lightpandaBin, buildBingSearchUrl(q))),
+]) {
+try {
+result = await attempt();
+} catch {
+result = { text: "", urls: [] };
+}
+if (result.text) break;
+}
+if (result.text) {
+if (searchCache.size > 100) searchCache.clear();
+searchCache.set(cacheKey, { text: result.text, at: Date.now() });
+return result.text;
+}
+return "";
+}
+if (config.searchApiKey) {
+try {
+const req = buildSerperRequest(config.searchApiBase, config.searchApiKey, q);
+const res = await fetchImpl(req.url, req.options);
+if (res && res.ok) {
+const data = await res.json();
+return parseSerperResults(data).text || "";
+}
+} catch {
+// 工具层失败统一按搜不到处理，模型会如实告知。
+}
+}
+return "";
+};
 const sleepFn = deps.sleep || ((ms) => new Promise((r) => setTimeout(r, ms)));
 const updateProfile =
 deps.updateProfile ||
@@ -378,6 +424,40 @@ async function reply(msg, text) {
 await sendToPeer(msg.peerId, { message: text, replyTo: msg.id, formattingEntities: quoteEntitiesFor(text) });
 recentSentTexts.push(String(text).trim());
 if (recentSentTexts.length > 30) recentSentTexts.shift();
+}
+
+/** 模型列表分段：编号连续、每段压在 Telegram 单条上限内。站上几百个模型时全量
+ * 列出、分几条发，不再只列前 50 个（号主对着 264 个模型的站实测要求取消上限）。 */
+function chunkModelList(header, lines, footer) {
+const LIMIT = 3500;
+const chunks = [];
+let cur = header || "";
+let hasLine = false;
+for (const line of lines) {
+const next = cur ? `${cur}\n${line}` : line;
+if (hasLine && next.length > LIMIT) {
+chunks.push(cur);
+cur = line;
+} else {
+cur = next;
+}
+hasLine = true;
+}
+if (footer) {
+const next = cur ? `${cur}\n${footer}` : footer;
+if (hasLine && next.length > LIMIT) {
+chunks.push(cur);
+cur = footer;
+} else {
+cur = next;
+}
+}
+chunks.push(cur);
+return chunks;
+}
+
+async function replyModelList(msg, header, lines, footer) {
+for (const chunk of chunkModelList(header, lines, footer)) await reply(msg, chunk);
 }
 
 function persistBlacklist() {
@@ -842,13 +922,13 @@ if (ids.length === 0) {
 pending.set(chatId, senderId, { ...entry, step: 4, models: null });
 return reply(msg, `key 已收到。「${entry.name}」的模型列表没拉到（接口可能不支持查询），直接发识图模型名全文（60 秒内有效），发完会实测一次。`);
 }
-const shown = ids.slice(0, 50);
-pending.set(chatId, senderId, { ...entry, step: 4, models: shown });
-const lines = shown.map((id, i) => `${i + 1}. ${id}${looksVisionCapable(id) ? "（可识图）" : ""}`).join("\n");
-const more = ids.length > shown.length ? `\n（共 ${ids.length} 个，只列前 ${shown.length} 个；想用其它的直接发模型名全文也行）` : "\n（也可以直接发模型名全文）";
-const anyVision = shown.some((id) => looksVisionCapable(id));
-const tail = anyVision ? "\n（带「可识图」的是按名字猜的，选完会拿测试图实测一次）" : "\n提醒：这个 API 的模型里没一个像能识图的（多半不支持），选了也会在实测那步失败。";
-return reply(msg, `key 已收到。「${entry.name}」可用模型，给它挑哪个识图模型？回数字选（60 秒内有效）：\n${lines}${more}${tail}`);
+pending.set(chatId, senderId, { ...entry, step: 4, models: ids });
+const lines = ids.map((id, i) => `${i + 1}. ${id}${looksVisionCapable(id) ? "（可识图）" : ""}`);
+const anyVision = ids.some((id) => looksVisionCapable(id));
+const tail = anyVision ? "（带「可识图」的是按名字猜的，选完会拿测试图实测一次）" : "提醒：这个 API 的模型里没一个像能识图的（多半不支持），选了也会在实测那步失败。";
+const footer = `${ids.length > 50 ? `（共 ${ids.length} 个；也可以直接发模型名全文）` : "（也可以直接发模型名全文）"}\n${tail}`;
+await replyModelList(msg, `key 已收到。「${entry.name}」可用模型，给它挑哪个识图模型？回数字选（60 秒内有效）：`, lines, footer);
+return;
 }
 
 /** 加识图api 命令入口：参数给全（4 段）就一步保存并实测；给不全按已给段数起分步 pending。 */
@@ -1014,16 +1094,16 @@ if (timer) clearTimeout(timer);
           pending.set(chatId, senderId, { kind: "加识图", step: 2, apiName: name, models: null });
           return reply(msg, `已选 API「${name}」。它的模型列表没拉到（接口可能不支持查询），直接发识图模型名全文（60 秒内有效），发完会实测一次。`);
         }
-        const shown = ids.slice(0, 50);
-        pending.set(chatId, senderId, { kind: "加识图", step: 2, apiName: name, models: shown });
-        const lines = shown.map((id, i) => `${i + 1}. ${id}${looksVisionCapable(id) ? "（可识图）" : ""}`).join("\n");
-        const more = ids.length > shown.length ? `\n（共 ${ids.length} 个，只列前 ${shown.length} 个；想用其它的直接发模型名全文也行）` : "\n（也可以直接发模型名全文）";
+        pending.set(chatId, senderId, { kind: "加识图", step: 2, apiName: name, models: ids });
+        const lines = ids.map((id, i) => `${i + 1}. ${id}${looksVisionCapable(id) ? "（可识图）" : ""}`);
         // 一个像识图的都没有：多半这家 API 就不支持识图（号主实测 DeepSeek 时踩过），
         // 先把话说在前面，别让人对着纯文本模型挑半天；加新识图 API 有专门命令。
-        const tail = shown.some((id) => looksVisionCapable(id))
-          ? "\n（带「可识图」的是按名字猜的，选完会拿测试图实测一次）"
-          : "\n提醒：这个 API 的模型里没一个像能识图的（多半不支持），选了也会在实测那步失败；要加一家新的识图 API，用 /ai 加识图api。";
-        return reply(msg, `已选 API「${name}」。给它加哪个识图模型？回数字选（60 秒内有效）：\n${lines}${more}${tail}`);
+        const tail = ids.some((id) => looksVisionCapable(id))
+          ? "（带「可识图」的是按名字猜的，选完会拿测试图实测一次）"
+          : "提醒：这个 API 的模型里没一个像能识图的（多半不支持），选了也会在实测那步失败；要加一家新的识图 API，用 /ai 加识图api。";
+        const footer = `${ids.length > 50 ? `（共 ${ids.length} 个；也可以直接发模型名全文）` : "（也可以直接发模型名全文）"}\n${tail}`;
+        await replyModelList(msg, `已选 API「${name}」。给它加哪个识图模型？回数字选（60 秒内有效）：`, lines, footer);
+        return;
       }
       let model = null;
       if (entry.models && digits !== null) model = pickFrom(entry.models);
@@ -1210,11 +1290,11 @@ if (timer) clearTimeout(timer);
         pending.set(chatId, senderId, { kind: "换模型", step: 2, providerName: target.name, models: null, image: target.image === true, vision: target.vision === true });
         return reply(msg, `「${target.name}」的模型列表没拉到（接口可能不支持查询）。直接发模型名全文就能换，60 秒内有效。`);
       }
-      const shown = ids.slice(0, 50);
-      pending.set(chatId, senderId, { kind: "换模型", step: 2, providerName: target.name, models: shown, image: target.image === true, vision: target.vision === true });
-      const lines = shown.map((id, i) => `${i + 1}. ${id}${id === target.model ? "（当前）" : ""}`).join("\n");
-      const more = ids.length > shown.length ? `\n（共 ${ids.length} 个，只列前 ${shown.length} 个；想用其它的直接发模型名全文也行）` : "\n（也可以直接发模型名全文）";
-      return reply(msg, `「${target.name}」可用模型（当前：${target.model}），回数字选（60 秒内有效）：\n${lines}${more}`);
+      pending.set(chatId, senderId, { kind: "换模型", step: 2, providerName: target.name, models: ids, image: target.image === true, vision: target.vision === true });
+      const lines = ids.map((id, i) => `${i + 1}. ${id}${id === target.model ? "（当前）" : ""}`);
+      const footer = ids.length > 50 ? `（共 ${ids.length} 个；也可以直接发模型名全文）` : "（也可以直接发模型名全文）";
+      await replyModelList(msg, `「${target.name}」可用模型（当前：${target.model}），回数字选（60 秒内有效）：`, lines, footer);
+      return;
     }
 
     if (entry.kind === "禁用api") {
@@ -1533,9 +1613,9 @@ if (timer) clearTimeout(timer);
         const list = await entry.client.models.list();
         const ids = ((list && list.data) || []).map((m) => m && m.id).filter(Boolean);
         if (ids.length === 0) return reply(msg, `「${name}」没返回任何模型。`);
-        const shown = ids.slice(0, 50);
-        const more = ids.length > shown.length ? `\n（共 ${ids.length} 个，只列前 ${shown.length} 个）` : "";
-        return reply(msg, `「${name}」可用模型：\n${shown.map((id) => `- ${id}`).join("\n")}${more}`);
+        const lines = ids.map((id) => `- ${id}`);
+        await replyModelList(msg, `「${name}」可用模型：`, lines, ids.length > 50 ? `（共 ${ids.length} 个）` : "");
+        return;
       } catch (err) {
         return reply(msg, `查询「${name}」的模型列表失败：${String(err.message || err).slice(0, 200)}`);
       }
@@ -2446,7 +2526,7 @@ if (timer) clearTimeout(timer);
     const directCmd = directToolCommand(question);
     if (directCmd) {
       try {
-        const directCtx = { chatId, senderId, senderName: speakerName, timezone: config.timezone, logger, outbox: [], store: toolStore, imageSearch: imageSearchImpl, imageGen: makeImageGenToolImpl(msg, chatId, senderId, speakerName, question, placeholder), client };
+        const directCtx = { chatId, senderId, senderName: speakerName, timezone: config.timezone, logger, outbox: [], store: toolStore, imageSearch: imageSearchImpl, webSearch: webSearchImpl, imageGen: makeImageGenToolImpl(msg, chatId, senderId, speakerName, question, placeholder), client };
         const directResult = await executeTool(directCmd.name, directCmd.args, directCtx);
         if (directResult) {
           const cleanDirect = scrubSecrets(String(directResult), collectSecrets(config));
@@ -2461,11 +2541,20 @@ if (timer) clearTimeout(timer);
 
     // 联网搜索：问题适合搜时先搜再把结果拼进问题让模型作答。
     // 后端二选一：配了 key 走 Serper/Tavily 接口；searchProvider=lightpanda 走本机 Lightpanda 抓 Brave/Bing（免 key）。
-    // 话题兜底：用户只说「去网上搜」这类指令、没带主题时，拿上一条用户问题当搜索主题。
-    const prevUserMsg = [...store.get(chatId, senderId)].reverse().find((m) => m.role === "user");
-    let fallbackQuery = prevUserMsg ? String(prevUserMsg.content || "") : "";
-    const labelMatch = fallbackQuery.match(/^[^：:\n]{1,12}[：:]([\s\S]+)$/);
-    if (labelMatch) fallbackQuery = labelMatch[1];
+    // 话题兜底：用户只说「去搜」这类指令、没带主题时，从最近的历史往前找第一条
+    // 有实质内容的用户消息当主题——只拿上一条会被连续指令带偏（连发「去搜」
+    // 「去浏览器搜呀」时上一条也是指令、清洗后为空，主题在更早那条里）。
+    let fallbackQuery = "";
+    for (const m of [...store.get(chatId, senderId)].reverse()) {
+      if (m.role !== "user") continue;
+      let c = String(m.content || "");
+      const lm = c.match(/^[^：:\n]{1,12}[：:]([\s\S]+)$/);
+      if (lm) c = lm[1];
+      if (cleanSearchQuery(c)) {
+        fallbackQuery = c;
+        break;
+      }
+    }
     const plan = planSearch(question, { hasKey: Boolean(config.searchApiKey), hasPhoto: false, provider: config.searchProvider, fallbackQuery, hasHistory: store.get(chatId, senderId).length > 0 });
     // AI 意图改写：识别平台/对象后改写查询词（失败回落清洗结果，不阻塞）。
     if (plan) plan.query = await rewriteSearchQuery(question, plan.query);
@@ -2576,7 +2665,7 @@ if (timer) clearTimeout(timer);
           text = await chatWithTools(
             entry,
             messages,
-            { chatId, senderId, senderName: speakerName, timezone: config.timezone, logger, outbox: toolOutbox, store: toolStore, imageSearch: imageSearchImpl, imageGen: makeImageGenToolImpl(msg, chatId, senderId, speakerName, question, placeholder), client },
+            { chatId, senderId, senderName: speakerName, timezone: config.timezone, logger, outbox: toolOutbox, store: toolStore, imageSearch: imageSearchImpl, webSearch: webSearchImpl, imageGen: makeImageGenToolImpl(msg, chatId, senderId, speakerName, question, placeholder), client },
             (u) => {
               seenUsage = u;
             },
@@ -2630,7 +2719,7 @@ if (timer) clearTimeout(timer);
     {
       const leaked = extractTextToolCalls(answer);
       if (leaked.length > 0 && usedEntry) {
-        const toolCtx = { chatId, senderId, senderName: speakerName, timezone: config.timezone, logger, outbox: toolOutbox, store: toolStore, imageSearch: imageSearchImpl, imageGen: makeImageGenToolImpl(msg, chatId, senderId, speakerName, question, placeholder), client };
+        const toolCtx = { chatId, senderId, senderName: speakerName, timezone: config.timezone, logger, outbox: toolOutbox, store: toolStore, imageSearch: imageSearchImpl, webSearch: webSearchImpl, imageGen: makeImageGenToolImpl(msg, chatId, senderId, speakerName, question, placeholder), client };
         const resultLines = [];
         for (const call of leaked) {
           try {
