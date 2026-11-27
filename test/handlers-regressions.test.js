@@ -947,6 +947,36 @@ test("0.1.6 带图说「生成同样的图片」：宽松判定进组合流程�
   assert.ok(!all.includes("没有可用的生图工具"), "不许再回没有生图工具");
 });
 
+test("0.1.7 以文件形式发的图片也算带图：走识图+生图组合，不再让聊天模型凭空编形象", async () => {
+  const png = Buffer.alloc(600, 7).toString("base64");
+  const f = fixture({
+    config: {
+      providers: [
+        { name: "default", model: "mock-model", baseURL: "https://offline.invalid/v1", apiKey: "x", dailyLimit: 0 },
+        { name: "imgone", model: "img-a", baseURL: "https://img.invalid/v1", apiKey: "y", dailyLimit: 0, image: true },
+      ],
+      visionPool: { default: [{ model: "vision-mock", weight: 1 }] },
+    },
+    deps: {
+      fetchImpl: async () => ({ ok: true, status: 200, json: async () => ({ data: [{ b64_json: png }] }) }),
+    },
+    model: (params) => {
+      const msgs = params.messages || [];
+      const hasImage = msgs.some((m) => Array.isArray(m.content) && m.content.some((c) => c.type === "image_url"));
+      if (hasImage) return { choices: [{ message: { content: "橘发少女与菊花，华丽画框" } }] };
+      return { choices: [{ message: { content: "不该走到聊天模型" } }] };
+    },
+  });
+  const ev = f.event("以大肥鱼的形象，生成同样的图片", {});
+  // 桌面端以文件发送：没有 .photo，只有 MessageMediaDocument + image mime
+  ev.message.media = { className: "MessageMediaDocument", document: { mimeType: "image/jpeg" } };
+  await f.handler(ev);
+  const all = [...f.sends.map((m) => m.message), ...f.edits.map((e) => e.text)].join("\n");
+  assert.ok(all.includes("橘发少女与菊花"), "文件图应先走识图拿到描述");
+  assert.equal(f.files.length, 1, "应按描述生成新图");
+  assert.ok(!all.includes("不该走到聊天模型"), "不许掉回纯聊天让模型凭空编形象");
+});
+
 test("0.1.4 web_search 工具：模型能自己联网搜，工具通道的结果真送达模型", async () => {
   const mdFor = (snippet) =>
     [

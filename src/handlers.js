@@ -217,8 +217,20 @@ const media = m.media;
 if (media && typeof media === "object") {
 if (media.photo) return true;
 if (media.className === "MessageMediaPhoto") return true;
+// 以「文件」形式发的图片（桌面端原图发送等）是 MessageMediaDocument：mime 是
+// image/* 的同样算带图。2026-11-27 实测漏了它：整条不进识图分支，模型看不到
+// 原图、自己编了个形象生成，还老实交代「原图我这边看不到」。
+const doc = media.document || m.document;
+if (doc && typeof doc === "object" && String(doc.mimeType || "").startsWith("image/")) return true;
 }
 return false;
+}
+
+/** 带图消息的真实 mime（文件形式发的图按文档 mime，其余默认 jpeg）：拼识图 data URL 用。 */
+function photoMimeOf(m) {
+const doc = (m && m.media && m.media.document) || (m && m.document) || null;
+const mime = doc && typeof doc.mimeType === "string" ? doc.mimeType : "";
+return /^image\/(jpeg|png|webp|gif)$/.test(mime) ? mime : "image/jpeg";
 }
 
 /**
@@ -2170,7 +2182,7 @@ if (timer) clearTimeout(timer);
     }
     if (!buf) return { error: "download-failed" };
 
-    const dataUrl = `data:image/jpeg;base64,${Buffer.from(buf).toString("base64")}`;
+    const dataUrl = `data:${photoMimeOf(photoMsg)};base64,${Buffer.from(buf).toString("base64")}`;
     const history = store.get(chatId, senderId);
     const messages = [
       { role: "system", content: buildSystemParts(senderId, speakerName, chatId, speakerUsername) },
