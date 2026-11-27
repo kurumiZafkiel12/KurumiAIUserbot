@@ -100,9 +100,47 @@ export function isImageGenRequest(question) {
  * 动词后在窗口内出现图像名词就算生图意图，不再要求量词。纯文字消息不用这个
  * （无图时「生成一个函数的图片说明」之类说法太多，仍走严格判定防误伤）。
  */
+const LOOSE_NOUN_WINDOW = 16; // 宽松判定扫得远些：「生成把肥鱼的改成另一种风格的图片」名词离动词 11 字
+const TEXT_OBJECT_WORDS = ["说明", "文字", "文案", "介绍", "描述", "标题"];
+
+/** 宽松版找图像名词（在 slice 开头 LOOSE_NOUN_WINDOW 字内）：名词后面紧跟说明/文字等
+ * 词时，它只是修饰语（真对象是文字），跳过不算。 */
+function findLooseImageNoun(slice) {
+  const end = Math.min(slice.length, LOOSE_NOUN_WINDOW);
+  for (let i = 0; i < end; i++) {
+    const noun = IMAGE_NOUNS.find((n) => slice.startsWith(n, i));
+    if (!noun) continue;
+    let after = slice.slice(i + noun.length, i + noun.length + 3);
+    if (after.startsWith("的")) after = after.slice(1);
+    if (TEXT_OBJECT_WORDS.some((w) => after.startsWith(w))) continue;
+    return noun;
+  }
+  return null;
+}
+
+/** 「生成一张图片说明」这类句式：图像名词只是修饰语、真对象是文字。名词前有生成
+ * 类动词、名词后紧跟（可隔「的」）说明/文字等词时命中——严格判定会先被
+ * 「生成+量词+图片」骗到，所以要在宽松入口先拦。 */
+function isTextObjectRequest(q) {
+  for (const noun of IMAGE_NOUNS) {
+    let idx = q.indexOf(noun);
+    while (idx !== -1) {
+      let after = q.slice(idx + noun.length, idx + noun.length + 3);
+      if (after.startsWith("的")) after = after.slice(1);
+      if (TEXT_OBJECT_WORDS.some((w) => after.startsWith(w))) {
+        const before = q.slice(0, idx);
+        if (VERBS.some((v) => before.includes(v))) return true;
+      }
+      idx = q.indexOf(noun, idx + noun.length);
+    }
+  }
+  return false;
+}
+
 export function isLooseImageGenRequest(question) {
   const q = String(question || "");
   if (!q) return false;
+  if (isTextObjectRequest(q)) return false;
   if (isImageGenRequest(q)) return true;
   for (let i = 0; i < q.length; i++) {
     for (const verb of VERBS) {
@@ -114,7 +152,7 @@ export function isLooseImageGenRequest(question) {
           break;
         }
       }
-      if (findImageNoun(q.slice(j))) return true;
+      if (findLooseImageNoun(q.slice(j))) return true;
     }
   }
   return false;

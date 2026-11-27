@@ -117,5 +117,11 @@ test("0.1.6 isLooseImageGenRequest：带图语境放宽，动词隔字接图像�
   // 只是问图里画了什么：名词在动词之前，不算生图
   assert.equal(isLooseImageGenRequest("这张图画的是什么"), false);
   assert.equal(isLooseImageGenRequest("这张照片里的人是谁"), false);
+  // 名词离动词远也算（2026-11-27 私聊实测原话）
+  assert.equal(isLooseImageGenRequest("生成把肥鱼的改成另一种风格的图片"), true);
+  // 对象是文字时不误伤：图片只是修饰语
+  assert.equal(isLooseImageGenRequest("生成一张图片说明"), false);
+  assert.equal(isLooseImageGenRequest("生成这张图片的文字版"), false);
+  assert.equal(isLooseImageGenRequest("生成这张图片的说明"), false);
   assert.equal(isLooseImageGenRequest(""), false);
 });
