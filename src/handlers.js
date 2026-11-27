@@ -233,6 +233,22 @@ const mime = doc && typeof doc.mimeType === "string" ? doc.mimeType : "";
 return /^image\/(jpeg|png|webp|gif)$/.test(mime) ? mime : "image/jpeg";
 }
 
+/** 下载到的字节是不是真图片（看文件头魔数）：空包/半截包/错包不许喂给识图模型装盲。 */
+function looksLikeImage(buf) {
+if (!buf || buf.length < 100) return false;
+if (buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff) return true; // jpeg
+if (buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4e && buf[3] === 0x47) return true; // png
+if (buf[0] === 0x47 && buf[1] === 0x49 && buf[2] === 0x46) return true; // gif
+if (buf.length > 12 && buf.toString("ascii", 0, 4) === "RIFF" && buf.toString("ascii", 8, 12) === "WEBP") return true; // webp
+return false;
+}
+
+/** 识图模型「没看到图」式回答的特征词：这种文本不是画面描述，不许拿去当生图提示词。 */
+const BLIND_DESCRIPTION_RE = /(看不到|看不见|无法看到|无法查看|没法看|只能读取文字|无法读取图片|没有收到图片|未收到图片|看不清这张)/;
+function looksBlindDescription(text) {
+return BLIND_DESCRIPTION_RE.test(String(text || ""));
+}
+
 /**
 * 创建消息处理函数（签名符合 GramJS 的 addEventHandler 回调）。
 * @param {object} deps { client, config, pool, store, logger, startedAt, notebook, profiles,
@@ -2180,7 +2196,15 @@ if (timer) clearTimeout(timer);
     } catch (err) {
       logger.error(`下载照片失败（chat=${chatId}）：${err.message}`);
     }
-    if (!buf) return { error: "download-failed" };
+    // 下载「成功」也可能是空包/错包（2026-11-27 相册图实测：字节不是真图，识图模型
+    // 收到后只能回「看不到图片内容」，那段废话还被当成描述拿去生图、生成完全不符
+    // 的图）。不是真图就按下载失败处理，并把字节数与文件头记进日志供定案。
+    if (!looksLikeImage(buf)) {
+      logger.error(
+        `识图下载内容异常（chat=${chatId}）：${buf ? buf.length : 0} 字节，文件头=${buf && buf.length >= 4 ? buf.slice(0, 4).toString("hex") : "无"}，media=${photoMsg && photoMsg.media ? photoMsg.media.className || "?" : "无"}`,
+      );
+      return { error: "download-failed" };
+    }
 
     const dataUrl = `data:${photoMimeOf(photoMsg)};base64,${Buffer.from(buf).toString("base64")}`;
     const history = store.get(chatId, senderId);
@@ -2248,7 +2272,9 @@ if (timer) clearTimeout(timer);
         ? "识图池是空的，发图提问暂时没模型可用。先让号主用 /ai 加识图 建池。"
         : error === "download-failed"
           ? "图片下载失败，请重发一次。"
-          : "抱歉，识图模型暂时都不可用，请稍后再试。";
+          : error === "blind"
+            ? "识图这次没看清这张图片，就不瞎生成了。请把图片重发一次再试。"
+            : "抱歉，识图模型暂时都不可用，请稍后再试。";
     try {
       await client.editMessage(msg.peerId, { message: placeholder.id, text });
     } catch (err) {
@@ -2318,6 +2344,13 @@ if (timer) clearTimeout(timer);
     );
     if (res.error) {
       await editVisionFailure(msg, placeholder, res.error);
+      return;
+    }
+    // 描述若是「看不到图片」式回答，说明这轮识图没真看到图：它不是画面描述，
+    // 拿去当生图提示词只会生成完全不符的图（2026-11-27 实测）。停在这里明说。
+    if (looksBlindDescription(res.answer)) {
+      logger.error(`识图返回没看到图式回答（chat=${chatId}），已拦下不生图`);
+      await editVisionFailure(msg, placeholder, "blind");
       return;
     }
     const description = res.answer;
