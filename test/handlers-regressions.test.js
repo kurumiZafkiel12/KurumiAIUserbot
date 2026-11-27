@@ -920,6 +920,33 @@ test("0.1.5 识图与生图的模型标注在占位上：识图占位带模型�
   assert.equal(f.files[0].caption, undefined, "生成的图片不带说明标注");
 });
 
+test("0.1.6 带图说「生成同样的图片」：宽松判定进组合流程，描述+生图都发出（不再被识图通道吞掉）", async () => {
+  const png = Buffer.alloc(600, 7).toString("base64");
+  const f = fixture({
+    config: {
+      providers: [
+        { name: "default", model: "mock-model", baseURL: "https://offline.invalid/v1", apiKey: "x", dailyLimit: 0 },
+        { name: "imgone", model: "img-a", baseURL: "https://img.invalid/v1", apiKey: "y", dailyLimit: 0, image: true },
+      ],
+      visionPool: { default: [{ model: "vision-mock", weight: 1 }] },
+    },
+    deps: {
+      fetchImpl: async () => ({ ok: true, status: 200, json: async () => ({ data: [{ b64_json: png }] }) }),
+    },
+    model: (params) => {
+      const msgs = params.messages || [];
+      const hasImage = msgs.some((m) => Array.isArray(m.content) && m.content.some((c) => c.type === "image_url"));
+      if (hasImage) return { choices: [{ message: { content: "橘发少女与菊花，华丽画框" } }] };
+      return { choices: [{ message: { content: "不该走到聊天模型" } }] };
+    },
+  });
+  await f.handler(f.event("已大肥鱼的形象，生成同样的图片", { photo: true }));
+  const all = [...f.sends.map((m) => m.message), ...f.edits.map((e) => e.text)].join("\n");
+  assert.ok(all.includes("橘发少女与菊花"), "应先发识图描述");
+  assert.equal(f.files.length, 1, "应按描述生成一张新图");
+  assert.ok(!all.includes("没有可用的生图工具"), "不许再回没有生图工具");
+});
+
 test("0.1.4 web_search 工具：模型能自己联网搜，工具通道的结果真送达模型", async () => {
   const mdFor = (snippet) =>
     [

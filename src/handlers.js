@@ -59,7 +59,7 @@ formatSearchContext,
 maskSearchKey,
 } from "./search.js";
 import { buildTtsRequest, pickVoiceName, cleanSpeechText, parseVoiceSwitch, voiceQueryKind} from "./tts.js";
-import { isImageGenRequest, extractImagePrompt, isReferentialImagePrompt, buildImageGenRequest, parseImageGenResponse} from "./imagegen.js";
+import { isImageGenRequest, isLooseImageGenRequest, extractImagePrompt, isReferentialImagePrompt, buildImageGenRequest, parseImageGenResponse} from "./imagegen.js";
 import { decideSplit, MAX_SPLIT_PARTS } from "./split.js";
 import { composeClockName, currentHHMM} from "./nameclock.js";
 import { toolGate, TOOLS_PROMPT_NOTE, executeTool, extractTextToolCalls, stripTextToolCalls, directToolCommand, mechanicalBulkRequest, bulkRefusalNote } from "./tools.js";
@@ -3184,9 +3184,11 @@ if (timer) clearTimeout(timer);
       // 识图池为空、但用户这句带了真实文字时，不走识图（别用「识图不可用」把文字问题
       // 一起打发），落回下面的普通文字问答；纯图无文字时仍走识图报错（v0.9.11）。
       if (photoSource && !(flattenVisionPool(config.visionPool).length === 0 && String(text || "").trim())) {
-        // 带图又明确要生图：走组合流程（先识图描述、再由聊天模型调 generate_image），
+        // 带图又明确要生图：走组合流程（先识图描述、再拿描述直接生图），
         // 不能整个吞进识图通道——识图模型没有生图工具，只会回「没有生图工具」。
-        if (isImageGenRequest(parsed.question)) {
+        // 带图时判定放宽（isLooseImageGenRequest）：「生成同样的图片」这类动词与
+        // 图像名词隔着几个字、又没量词的说法严格判定会漏，带着图时语境足够明确。
+        if (isImageGenRequest(parsed.question) || isLooseImageGenRequest(parsed.question)) {
           await handleVisionThenGen(msg, chatId, senderId, speakerName, parsed, photoSource, speakerUsername);
           return;
         }

@@ -93,6 +93,34 @@ export function isImageGenRequest(question) {
 }
 
 /**
+ * 带图消息专用的宽松生图判定。严格判定要求动词与图像名词紧贴或隔着量词，
+ * 「生成同样的图片」（动词后隔着「同样的」、又没量词）会被判否——2026-11-27
+ * 群里实测：用户给图配字「生成同样的图片」，整条被识图通道吞掉，识图模型没有
+ * 生图工具、只能回「没有可用的生图工具」。消息本身带着图时语境已经明确：
+ * 动词后在窗口内出现图像名词就算生图意图，不再要求量词。纯文字消息不用这个
+ * （无图时「生成一个函数的图片说明」之类说法太多，仍走严格判定防误伤）。
+ */
+export function isLooseImageGenRequest(question) {
+  const q = String(question || "");
+  if (!q) return false;
+  if (isImageGenRequest(q)) return true;
+  for (let i = 0; i < q.length; i++) {
+    for (const verb of VERBS) {
+      if (!q.startsWith(verb, i)) continue;
+      let j = i + verb.length;
+      for (const qt of QUANTIFIERS) {
+        if (q.startsWith(qt, j)) {
+          j += qt.length;
+          break;
+        }
+      }
+      if (findImageNoun(q.slice(j))) return true;
+    }
+  }
+  return false;
+}
+
+/**
  * 从问题里剥掉生图触发片段，剩下的就是画面描述（prompt）。
  * 顺带清掉残留的请求前缀（帮我/给我/能…）与句尾语气词（吗/么）。
  */

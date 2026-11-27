@@ -2,7 +2,7 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
-import { isImageGenRequest, extractImagePrompt, isReferentialImagePrompt, buildImageGenRequest, parseImageGenResponse } from "../src/imagegen.js";
+import { isImageGenRequest, isLooseImageGenRequest, extractImagePrompt, isReferentialImagePrompt, buildImageGenRequest, parseImageGenResponse } from "../src/imagegen.js";
 
 const keyProp = "api" + "Key";
 
@@ -103,4 +103,19 @@ test("0.1.3 isReferentialImagePrompt：「按照这张照片」也算指代", ()
 assert.equal(isReferentialImagePrompt(extractImagePrompt("按照这张照片生成一个照片")), true);
 assert.equal(isReferentialImagePrompt("这张照片"), true);
 assert.equal(isReferentialImagePrompt("这张照片里的猫"), false);
+});
+
+test("0.1.6 isLooseImageGenRequest：带图语境放宽，动词隔字接图像名词也算生图", () => {
+  // 本次事故原话：严格判定为 false，宽松判定必须救回来
+  assert.equal(isImageGenRequest("已大肥鱼的形象，生成同样的图片"), false);
+  assert.equal(isLooseImageGenRequest("已大肥鱼的形象，生成同样的图片"), true);
+  assert.equal(isLooseImageGenRequest("生成同样的图片"), true);
+  assert.equal(isLooseImageGenRequest("帮我生成类似的图"), true);
+  // 严格判定命中的，宽松必然命中
+  assert.equal(isLooseImageGenRequest("生成一张猫的图片"), true);
+  assert.equal(isLooseImageGenRequest("画图"), true);
+  // 只是问图里画了什么：名词在动词之前，不算生图
+  assert.equal(isLooseImageGenRequest("这张图画的是什么"), false);
+  assert.equal(isLooseImageGenRequest("这张照片里的人是谁"), false);
+  assert.equal(isLooseImageGenRequest(""), false);
 });
