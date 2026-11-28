@@ -1469,3 +1469,21 @@ test("0.2.1 加api 类型选择进入分步流程；词列表/限速列表可用
   await f.handler(f.event("/ai 词列表"));
   assert.ok(f.sends[f.sends.length - 1].message.includes("测试词"));
 });
+
+test("0.2.1 清空只走确认流程：旧版立即清空分支不得残留（防顺序变动绕过防呆）", () => {
+  const src = fs.readFileSync(new URL("../src/handlers.js", import.meta.url), "utf-8");
+  assert.ok(src.includes('if (entry.kind === "清空确认")'), "清空确认执行分支必须在");
+  // 清空的三个动作与提示文案只允许出现一次——都应在 executePending 的确认分支里。
+  // 再多出来就是旧版「立即清空」代码混回来了：它排在确认分支之后时防呆会被顺序绕过。
+  for (const marker of [
+    "已清空当前会话记事本",
+    "已清空用户",
+    "已清空全部对话上下文",
+    "userNotebook.clear(",
+    "store.clearAll()",
+    "notebook.clear(chatId)",
+  ]) {
+    const n = src.split(marker).length - 1;
+    assert.equal(n, 1, `「${marker}」应只出现 1 次，实际 ${n} 次——疑似残留旧版立即清空代码`);
+  }
+});

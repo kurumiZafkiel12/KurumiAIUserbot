@@ -2281,18 +2281,6 @@ if (timer) clearTimeout(timer);
       return reply(msg, "用法：/ai 忘掉用户 <用户ID> <序号>（序号看 /ai 查看印象 <用户ID>）");
     }
 
-    if (cmd === "清空用户记忆") {
-      const target = unwrapArg((rest[0] || "").trim());
-      if (!target) return reply(msg, "用法：/ai 清空用户记忆 <用户ID>");
-      const n = userNotebook.clear(target);
-      return reply(msg, `已清空用户 ${target} 的用户记事本（原有 ${n} 条）`);
-    }
-
-    if (cmd === "清空上下文") {
-      const n = store.clearAll();
-      return reply(msg, `已清空全部对话上下文（${n} 组）`);
-    }
-
 
     return reply(msg, "未知命令。发 /ai 帮助 看全部命令（都是代码写死的固定说明，不走模型）。");
   }
