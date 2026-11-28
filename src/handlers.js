@@ -233,6 +233,38 @@ const mime = doc && typeof doc.mimeType === "string" ? doc.mimeType : "";
 return /^image\/(jpeg|png|webp|gif)$/.test(mime) ? mime : "image/jpeg";
 }
 
+// 识图下载的字节上限（0.2.0）：服务器长期运行、内存有限，文件形式发的 image/* 文档
+// 可以几十 MB——整包读进内存再 base64（体积再 ×1.33）几张并发就把小鸡打爆了。
+export const VISION_MAX_BYTES = 15 * 1024 * 1024;
+
+/**
+ * 带图消息的文件大小（字节）：文档认 document.size（GramJS 的 big-integer Long，
+ * 用 toJSNumber 取数；普通 number 直接用），照片认 sizes 里最大一档的 size，
+ * 兜底认 GramJS 封装的 msg.file.size。拿不到返回 0（未知，由下载后的字节校验兜底）。
+ */
+export function mediaByteSizeOf(m) {
+if (!m || typeof m !== "object") return 0;
+const toNum = (v) => {
+if (typeof v === "number") return Number.isFinite(v) ? v : 0;
+if (v && typeof v.toJSNumber === "function") return v.toJSNumber();
+const n = Number(v);
+return Number.isFinite(n) && n >= 0 ? n : 0;
+};
+const doc = (m.media && m.media.document) || m.document;
+const docSize = doc ? toNum(doc.size) : 0;
+if (docSize > 0) return docSize;
+const photo = (m.media && m.media.photo) || m.photo;
+if (photo && Array.isArray(photo.sizes)) {
+let biggest = 0;
+for (const s of photo.sizes) {
+const n = toNum(s && s.size);
+if (n > biggest) biggest = n;
+}
+if (biggest > 0) return biggest;
+}
+return toNum(m.file && m.file.size);
+}
+
 /** 下载到的字节是不是真图片（看文件头魔数）：空包/半截包/错包不许喂给识图模型装盲。 */
 function looksLikeImage(buf) {
 if (!buf || buf.length < 100) return false;
@@ -697,8 +729,14 @@ function isPersonaMode() {
 return!config.systemPromptIsDefault || Boolean((config.poJia || "").trim());
 }
 
-/** 用提供方池问模型一次（非流式用途：后台整理）。拿不到提供方返回 null，失败抛错由调用方记日志。 */
-async function askModelOnce(messages) {
+/**
+ * 用提供方池问模型一次（非流式用途：搜索改写、后台整理）。
+ * 拿不到提供方返回 null，失败抛错由调用方记日志。
+ * opts.coolDownOnFail（默认 true）：搜索改写与后台整理是辅助调用，失败只释放名额、
+ * 不把提供方打进 30 秒失败冷却——否则一次改写超时会让紧接着的正题提问吃
+ * 「所有模型都暂时不可用」（0.2.0）。正题聊天不走这里。
+ */
+async function askModelOnce(messages, opts = {}) {
 const entry = pool.pick(new Set());
 if (!entry) return null;
 let seenUsage = null;
@@ -710,7 +748,12 @@ pool.markSuccess(entry);
 usageStats.record(entry.model, seenUsage);
 return text;
 } catch (err) {
+if (opts.coolDownOnFail === false) {
+pool.release(entry);
+logger.warn(`辅助模型调用失败（${entry.name}，不进冷却）：${err.message}`);
+} else {
 pool.markFailure(entry, err);
+}
 throw err;
 }
 }
@@ -720,14 +763,17 @@ throw err;
  * 查询词。任何失败都回落到传入的兜底查询，绝不阻塞搜索。 */
 async function rewriteSearchQuery(rawQuestion, fallback) {
 try {
-const out = await askModelOnce([
+const out = await askModelOnce(
+[
 {
 role: "system",
 content:
 "你负责把用户的问题改写成一句给搜索引擎的查询词。规则：只输出查询词本身一行，不要解释、不要引号；保留关键专名；问题里提到平台（X/推特/B站/知乎/微博/GitHub 等）时把平台名写进查询；问的是某个平台上的用户/账号时，按『平台名 + 用户名 + 用户』组织查询，不要把用户名当普通名词；问新闻事件就保留事件关键词；问概念/事物就保留事物名加问题关键词。",
 },
 { role: "user", content: String(rawQuestion || "") },
-]);
+],
+{ coolDownOnFail: false },
+);
 return sanitizeRewrittenQuery(out, fallback);
 } catch (err) {
 logger.error(`搜索查询改写失败：${err.message}`);
@@ -776,7 +822,9 @@ content:
 "- 某一段没有任何可记内容时，该段下面只写「（空）」\n\n" +
 `【会话记事本】\n${existing}\n\n【用户记事本】\n${existingUser}\n\n\n${convo}`,
 },
-]);
+],
+{ coolDownOnFail: false },
+);
 if (out && out.trim()!== "（空）") {
 const { chatLines, userLines } = parseConsolidationSections(out);
 if (notebook.version(chatId) !== startVersion) {
@@ -807,7 +855,9 @@ content:
 (oldImp? `已有印象是：「${oldImp}」。有新信息就给出更新后的完整印象，没有新信息就只回复「保留」。`: "") +
 `\n\n\n${samples.map((m) => m.content).join("\n")}`,
 },
-]);
+],
+{ coolDownOnFail: false },
+);
 const text = (imp || "").trim();
 if (text &&!text.startsWith("保留")) {
 profiles.setImpression(senderId, text.slice(0, 200));
@@ -2158,8 +2208,14 @@ if (timer) clearTimeout(timer);
     }
   }
 
-  /** 普通用户提问冷却检查（聊天与识图共用）。返回 true 表示还在冷却、要忽略。 */
+  /**
+   * 普通用户提问冷却检查（聊天与识图共用）。返回 true 表示还在冷却、要忽略。
+   * 号主与管理员不受冷却影响（docs/CONFIG.md 一直承诺「号主不受冷却限制」，
+   * 号主帮助也写了管理员「不受提问冷却影响」——0.2.0 起代码兑现，此前普通消息
+   * 全员 5 秒冷却，号主连发两条第二条会被静默吞掉）。
+   */
   function isCoolingDown(senderId) {
+    if (roleOf(senderId, permConfig()) !== "user") return false;
     const now = Date.now();
     const last = lastAskAt.get(senderId) || 0;
     if (config.cooldownSeconds > 0 && now - last < config.cooldownSeconds * 1000) return true;
@@ -2190,11 +2246,24 @@ if (timer) clearTimeout(timer);
     });
     if (items.length === 0) return { error: "pool-empty" };
 
+    // 先看声明大小再下载（0.2.0）：几十 MB 的「图片文件」整包读进内存再 base64 会
+    // 把小内存服务器打爆，下载前就拦下。
+    const declared = mediaByteSizeOf(photoMsg);
+    if (declared > VISION_MAX_BYTES) {
+      logger.warn(`图片过大，不做识图（chat=${chatId}）：声明 ${declared} 字节 > 上限 ${VISION_MAX_BYTES}`);
+      return { error: "too-large" };
+    }
+
     let buf = null;
     try {
       buf = await client.downloadMedia(photoMsg, { workers: 1 });
     } catch (err) {
       logger.error(`下载照片失败（chat=${chatId}）：${err.message}`);
+    }
+    // 声明大小拿不到时（=0）靠下载后的字节校验兜底：超限同样按过大处理。
+    if (buf && buf.length > VISION_MAX_BYTES) {
+      logger.warn(`图片过大，不做识图（chat=${chatId}）：实际 ${buf.length} 字节 > 上限 ${VISION_MAX_BYTES}`);
+      return { error: "too-large" };
     }
     // 下载「成功」也可能是空包/错包（2026-11-27 相册图实测：字节不是真图，识图模型
     // 收到后只能回「看不到图片内容」，那段废话还被当成描述拿去生图、生成完全不符
@@ -2272,9 +2341,11 @@ if (timer) clearTimeout(timer);
         ? "识图池是空的，发图提问暂时没模型可用。先让号主用 /ai 加识图 建池。"
         : error === "download-failed"
           ? "图片下载失败，请重发一次。"
-          : error === "blind"
-            ? "识图这次没看清这张图片，就不瞎生成了。请把图片重发一次再试。"
-            : "抱歉，识图模型暂时都不可用，请稍后再试。";
+          : error === "too-large"
+            ? "这张图片太大了（超过 15MB），压小一点再发。"
+            : error === "blind"
+              ? "识图这次没看清这张图片，就不瞎生成了。请把图片重发一次再试。"
+              : "抱歉，识图模型暂时都不可用，请稍后再试。";
     try {
       await client.editMessage(msg.peerId, { message: placeholder.id, text });
     } catch (err) {

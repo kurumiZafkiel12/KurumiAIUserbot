@@ -19,8 +19,24 @@ export function displayModelName(model) {
 }
 // 单次回复的输出 token 上限：没有上限时「从1数到10000」这类请求会一直生成到模型
 // 自身的硬顶，烧 token、刷屏、还污染上下文（2026-11-24 hyw 群实测）。4096 足够覆盖
-// 正常长答；接口不认 max_tokens 时 chat/visionChat 都会去掉它重试一次。
-const CHAT_MAX_OUTPUT_TOKENS = 4096;
+// 正常长答；接口不认 max_tokens 时 chat/visionChat/toolchat 都会去掉它重试一次。
+export const CHAT_MAX_OUTPUT_TOKENS = 4096;
+
+// 模型调用超时（服务器 7×24 跑，接口挂死不能拖死整条回答链）：
+// - 首字节超时：连不上/响应头迟迟不来（最常见的挂死形态），120 秒放弃；
+// - 总超时：流式正文可能慢慢吐很久（慢站 4096 token 能吐好几分钟），给 10 分钟硬顶，
+//   防止极少数「头回来了、正文永远不来」的挂法把请求吊死。
+// 超时抛错走 markFailure：预留的名额正常释放，不会再把每日额度永久占掉（0.2.0）。
+export const PROVIDER_FIRST_BYTE_TIMEOUT_MS = 120_000;
+export const PROVIDER_TOTAL_TIMEOUT_MS = 600_000;
+
+/** 每次请求的 SDK 选项：超时 + 总硬顶（AbortSignal.timeout 的计时器不占事件循环）。 */
+function providerRequestOptions() {
+  return {
+    timeout: PROVIDER_FIRST_BYTE_TIMEOUT_MS,
+    signal: AbortSignal.timeout(PROVIDER_TOTAL_TIMEOUT_MS),
+  };
+}
 
 /**
  * 临时 API 客户端：加识图api 时提供方还没存进池子，先拿 baseURL+key 造一个
@@ -214,7 +230,7 @@ export class ProviderPool {
       const params = { model: entry.model, messages, stream: true };
       if (withCap) params.max_tokens = CHAT_MAX_OUTPUT_TOKENS;
       if (withUsageOption) params.stream_options = { include_usage: true };
-      const stream = await entry.client.chat.completions.create(params);
+      const stream = await entry.client.chat.completions.create(params, providerRequestOptions());
       let full = "";
       let produced = false;
       let usage = null;
@@ -269,11 +285,14 @@ export class ProviderPool {
   async visionChat(entry, model, messages, onUsage) {
     let res;
     try {
-      res = await entry.client.chat.completions.create({ model, messages, stream: false, max_tokens: CHAT_MAX_OUTPUT_TOKENS });
+      res = await entry.client.chat.completions.create(
+        { model, messages, stream: false, max_tokens: CHAT_MAX_OUTPUT_TOKENS },
+        providerRequestOptions(),
+      );
     } catch (err) {
       // 接口不认 max_tokens 时去掉上限重试一次（同 chat 的理由）。
       if (!/max_tokens|max_completion_tokens/i.test((err && err.message) || "")) throw err;
-      res = await entry.client.chat.completions.create({ model, messages, stream: false });
+      res = await entry.client.chat.completions.create({ model, messages, stream: false }, providerRequestOptions());
     }
     const text = (res && res.choices && res.choices[0] && res.choices[0].message && res.choices[0].message.content) || "";
     if (!String(text).trim()) throw new Error("识图模型返回了空内容");

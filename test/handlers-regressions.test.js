@@ -143,7 +143,8 @@ function fixture(options = {}) {
   const store = new ConversationStore(20);
   const pending = new PendingSelections(options.nowFn ? { nowFn: options.nowFn } : {});
   const recordsPath = path.join(tmpRoot, `records-${Math.random().toString(36).slice(2)}.json`);
-  const records = new GroupRecords(recordsPath);
+  // 测试要同步读落盘文件，关掉防抖（生产默认 5 秒合并写一次）
+  const records = new GroupRecords(recordsPath, { saveDelayMs: 0 });
   const notebookPath = path.join(tmpRoot, `facts-${Math.random().toString(36).slice(2)}.json`);
   const notebook = new Notebook(notebookPath);
   const userNotebook = new Notebook(null);
@@ -1301,4 +1302,48 @@ test("0.0.2 提供方列表标注类型：聊天/生图/识图人人有份，不
   assert.match(list, /tokennova \| 类型：生图 \| 模型：gpt-image-2 \|/);
   assert.match(list, /seer \| 类型：聊天、识图 \| 模型：gpt-4o \|/);
   assert.ok(!list.includes("区域："), "不再标地理区域");
+});
+
+// ================= 0.2.0：冷却豁免 / 识图大小上限 / 辅助调用不进冷却 =================
+
+test("0.2.0 提问冷却只对普通用户生效，号主与管理员豁免（文档承诺兑现）", async () => {
+  const f = fixture({ config: { cooldownSeconds: 5 } });
+  // 号主（111）连发两条：两条都要调模型
+  await f.handler(f.event("@mybot 第一条", { sender: "111", group: true }));
+  await f.handler(f.event("@mybot 第二条", { sender: "111", group: true }));
+  assert.equal(f.modelCalls.length, 2, "号主不受冷却影响，两条都应处理");
+  // 管理员（222）连发两条：两条都要调模型
+  await f.handler(f.event("@mybot 管理员一", { sender: "222", group: true }));
+  await f.handler(f.event("@mybot 管理员二", { sender: "222", group: true }));
+  assert.equal(f.modelCalls.length, 4, "管理员不受冷却影响，两条都应处理");
+  // 普通用户（333）连发两条：第二条在冷却内被静默忽略
+  await f.handler(f.event("@mybot 用户一", { sender: "333", group: true }));
+  await f.handler(f.event("@mybot 用户二", { sender: "333", group: true }));
+  assert.equal(f.modelCalls.length, 5, "普通用户第二条在 5 秒冷却内应被忽略");
+});
+
+test("0.2.0 声明大小超限的图片不下载不识图，回复过大提示", async () => {
+  const f = fixture({
+    config: { visionPool: { default: [{ model: "mock-vision", weight: 1 }] } },
+  });
+  const ev = f.event("@mybot 这是什么", { group: true, chat: "-100777", sender: "333", photo: true });
+  // 20MB 的「图片」：超过 15MB 上限，下载前就拦下
+  ev.message.photo = { className: "Photo", sizes: [{ size: 20 * 1024 * 1024 }] };
+  await f.handler(ev);
+  assert.equal(f.modelCalls.length, 0, "过大图片不能调识图模型");
+  assert.ok(
+    f.edits.some((e) => e.text.includes("太大")),
+    "应把占位改成过大提示",
+  );
+});
+
+test("0.2.0 mediaByteSizeOf：文档 size（Long/数字）、照片 sizes、file.size 的取值顺序", async () => {
+  const { mediaByteSizeOf } = await import("../src/handlers.js");
+  const long = { toJSNumber: () => 42 };
+  assert.equal(mediaByteSizeOf({ media: { document: { size: long } } }), 42);
+  assert.equal(mediaByteSizeOf({ document: { size: 7 } }), 7);
+  assert.equal(mediaByteSizeOf({ media: { photo: { sizes: [{ size: 1 }, { size: 9 }, { size: 4 }] } } }), 9);
+  assert.equal(mediaByteSizeOf({ file: { size: 123 } }), 123);
+  assert.equal(mediaByteSizeOf({}), 0);
+  assert.equal(mediaByteSizeOf(null), 0);
 });

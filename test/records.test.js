@@ -53,13 +53,25 @@ test("renderRecords 带时间前缀（机器人时区），跨天能分清（v0.
 test("落盘后能读回；文件损坏按空启动不抛错", () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "userbot-records-"));
   const file = path.join(dir, "records.json");
-  const r1 = new GroupRecords(file);
+  const r1 = new GroupRecords(file, { saveDelayMs: 0 });
   r1.record("g", { name: "甲", senderId: "1", text: "落盘测试" });
   const r2 = new GroupRecords(file);
   assert.equal(r2.count("g"), 1);
   fs.writeFileSync(file, "{坏掉的 json", "utf-8");
   const r3 = new GroupRecords(file);
   assert.equal(r3.count("g"), 0);
+});
+
+test("落盘防抖（0.2.0）：默认延迟下 record 不立即写盘，flush 后写入", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "userbot-records-"));
+  const file = path.join(dir, "records.json");
+  const r = new GroupRecords(file); // 默认 5 秒防抖
+  r.record("g", { name: "甲", senderId: "1", text: "防抖窗口内" });
+  assert.equal(fs.existsSync(file), false, "防抖窗口内不该有文件");
+  assert.equal(r.count("g"), 1, "内存里要有（写盘失败退化为内存版的老规矩不变）");
+  r.flush();
+  const r2 = new GroupRecords(file);
+  assert.equal(r2.count("g"), 1, "flush 后要落盘");
 });
 
 test("GroupRecords.chats()：列出有记录的群（v0.9.18 全群记录的状态页要用）", () => {

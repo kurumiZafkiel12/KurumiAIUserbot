@@ -939,7 +939,10 @@ export async function bookSearchTool(title) {
     .join("\n");
 }
 
-const PRIVATE_HOST_RE = /^(localhost|127\.|10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.|0\.0\.0\.0|::1)/i;
+// 内网/链路本地地址不展开：127/10/192.168/172.16-31/0.0.0.0/::1 是常规内网，
+// 169.254.* 是云服务器实例元数据端点（AWS/GCP/阿里云等，能探到实例凭证），
+// fe80:* 是 IPv6 链路本地（0.2.0 补前两类）。
+const PRIVATE_HOST_RE = /^(localhost|127\.|10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.|0\.0\.0\.0|169\.254\.|fe80:|::1)/i;
 
 export async function expandUrlTool(url) {
   let current = String(url || "").trim();

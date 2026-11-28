@@ -44,6 +44,13 @@ export function saveConfigJson(patch) {
   const current = readConfigJson();
   const next = { ...current, ...patch };
   fs.writeFileSync(CONFIG_PATH, JSON.stringify(next, null, 2) + "\n", "utf-8");
+  // config.json 里有各 API 的明文 key（0.2.0）：服务器默认 umask 022 会写成 0644、
+  // 同机其他用户可读——尽量收成 600；Windows 等平台不支持就忽略。
+  try {
+    fs.chmodSync(CONFIG_PATH, 0o600);
+  } catch {
+    // 权限收紧失败不影响保存本身。
+  }
   return next;
 }
 

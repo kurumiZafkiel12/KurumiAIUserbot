@@ -3,6 +3,11 @@
 // 轮数上限防死循环；最后一轮不再给工具，逼模型收尾。
 
 import { TOOL_SCHEMAS, executeTool } from "./tools.js";
+import {
+  CHAT_MAX_OUTPUT_TOKENS,
+  PROVIDER_FIRST_BYTE_TIMEOUT_MS,
+  PROVIDER_TOTAL_TIMEOUT_MS,
+} from "./providers.js";
 
 const MAX_TOOL_ROUNDS = 4;
 
@@ -28,17 +33,31 @@ export async function chatWithTools(entry, messages, ctx, onUsage) {
 
   for (let round = 0; round <= MAX_TOOL_ROUNDS; round++) {
     const lastRound = round === MAX_TOOL_ROUNDS;
+    // 输出上限与超时和 pool.chat 同一套（0.2.0）：工具管线此前没有 max_tokens，
+    // 「数到一万」这类护栏在这条主路径上是缺位的；接口不认 max_tokens 时去掉重试一次。
+    const attempt = async (withCap) => {
+      const params = { model: entry.model, messages: convo };
+      if (!lastRound) {
+        params.tools = TOOL_SCHEMAS;
+        params.tool_choice = "auto";
+      }
+      if (withCap) params.max_tokens = CHAT_MAX_OUTPUT_TOKENS;
+      return entry.client.chat.completions.create(params, {
+        timeout: PROVIDER_FIRST_BYTE_TIMEOUT_MS,
+        signal: AbortSignal.timeout(PROVIDER_TOTAL_TIMEOUT_MS),
+      });
+    };
     let res;
     try {
-      res = await entry.client.chat.completions.create({
-        model: entry.model,
-        messages: convo,
-        ...(lastRound ? {} : { tools: TOOL_SCHEMAS, tool_choice: "auto" }),
-      });
+      res = await attempt(true);
     } catch (err) {
       // 第一轮就因 tools 参数报错：多半是这家接口不支持工具调用，回退普通聊天。
       if (round === 0 && /tool/i.test((err && err.message) || "")) return null;
-      throw err;
+      if (/max_tokens|max_completion_tokens/i.test((err && err.message) || "")) {
+        res = await attempt(false);
+      } else {
+        throw err;
+      }
     }
     addUsage(res && res.usage);
     const message = res && res.choices && res.choices[0] && res.choices[0].message;

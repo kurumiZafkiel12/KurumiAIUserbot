@@ -105,12 +105,10 @@ export async function fetchBalance(entry, fetchImpl = fetch) {
   return text;
 }
 
-/** 全部提供方的余额报告（号主「账单」命令用）。 */
+/** 全部提供方的余额报告（号主「账单」命令用）。并发查询（0.2.0）：串行时每个
+ * 提供方最多 3×5 秒，接口一多命令就卡半分钟。 */
 export async function balanceReport(entries, fetchImpl = fetch) {
-  const lines = [];
-  for (const e of entries || []) {
-    const bal = await fetchBalance(e, fetchImpl);
-    lines.push(`- ${e.name}：${bal ?? "不支持用 Key 查询（请到接口网站看）"}`);
-  }
-  return lines.join("\n");
+  const list = entries || [];
+  const bals = await Promise.all(list.map((e) => fetchBalance(e, fetchImpl)));
+  return list.map((e, i) => `- ${e.name}：${bals[i] ?? "不支持用 Key 查询（请到接口网站看）"}`).join("\n");
 }

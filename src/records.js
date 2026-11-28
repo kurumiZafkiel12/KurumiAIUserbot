@@ -1,16 +1,22 @@
 // 群聊天记录：开启记录的群里，所有消息都按群存进 records.json（环形，
 // 每群最多留 maxPerGroup 条），回答该群问题时把最近 N 条拼成上下文注入，
 // 让机器人知道大家刚才在聊什么。落盘容错仿 state.js：文件损坏按空启动，绝不抛错。
+// 落盘防抖（0.2.0）：此前每条群消息都把整个 records.json 全量 stringify + 同步写盘，
+// recordAllGroups 默认开，活跃群里这是消息热路径上的事件循环阻塞与磁盘磨损——
+// 现在合并成每 5 秒最多写一次（flush() 可强制落盘）；防抖窗口内进程被杀，最多丢
+// 最近几秒的记录，对聊天记录可接受。
 
 import fs from "node:fs";
 
 const DEFAULT_MAX_PER_GROUP = 1000;
+const DEFAULT_SAVE_DELAY_MS = 5000;
 
 export class GroupRecords {
   /**
    * @param {string|null} filePath 持久化文件（如 records.json）；null 表示只用内存
    * @param {object} [options]
    * @param {number} [options.maxPerGroup] 每群最多保留的记录条数（环形截断）
+   * @param {number} [options.saveDelayMs] 落盘防抖毫秒数；0 = 每条立即同步写（测试用）
    */
   constructor(filePath, options = {}) {
     this.path = filePath || null;
@@ -18,8 +24,14 @@ export class GroupRecords {
       Number.isFinite(options.maxPerGroup) && options.maxPerGroup > 0
         ? Math.floor(options.maxPerGroup)
         : DEFAULT_MAX_PER_GROUP;
+    this.saveDelayMs =
+      Number.isFinite(options.saveDelayMs) && options.saveDelayMs >= 0
+        ? Math.floor(options.saveDelayMs)
+        : DEFAULT_SAVE_DELAY_MS;
     /** @type {Map<string, Array<{ts: string, name: string, senderId: string, text: string}>>} */
     this.groups = new Map();
+    /** @type {NodeJS.Timeout|null} 防抖定时器（非 null 表示有未落盘的变更） */
+    this._saveTimer = null;
     this._load();
   }
 
@@ -49,6 +61,22 @@ export class GroupRecords {
 
   _save() {
     if (!this.path) return;
+    // 防抖：已在等待落盘就不要再排定时器（本轮变更会在到期时一起写入）。
+    if (this._saveTimer) return;
+    if (this.saveDelayMs <= 0) {
+      this._writeNow();
+      return;
+    }
+    this._saveTimer = setTimeout(() => {
+      this._saveTimer = null;
+      this._writeNow();
+    }, this.saveDelayMs);
+    if (this._saveTimer.unref) this._saveTimer.unref();
+  }
+
+  /** 立即落盘（不等防抖窗口）：真正执行写文件。 */
+  _writeNow() {
+    if (!this.path) return;
     try {
       const obj = {};
       for (const [chatId, list] of this.groups) obj[chatId] = list;
@@ -56,6 +84,14 @@ export class GroupRecords {
     } catch {
       // 写盘失败不抛错，记录退化为内存版。
     }
+  }
+
+  /** 强制把未落盘的变更立刻写盘（测试/维护用）。 */
+  flush() {
+    if (!this._saveTimer) return;
+    clearTimeout(this._saveTimer);
+    this._saveTimer = null;
+    this._writeNow();
   }
 
   /**
