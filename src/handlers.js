@@ -88,6 +88,7 @@ export const OWNER_HELP_TEXT = `可用命令：
 /ai 服务器
 /ai 日志
 /ai 账单（查看今日用量、Token 与余额；「用量」「用量报告」是它的别名）
+/ai 模型（看当前默认提供方与模型）
 
 【用户名】
 /ai 开启用户名
@@ -104,22 +105,27 @@ export const OWNER_HELP_TEXT = `可用命令：
 【拉黑/限速】
 /ai 拉黑 <用户ID>
 /ai 解封 <用户ID>
+/ai 黑名单（查看已拉黑名单）
 /ai 限速 <用户ID>
 /ai 解除限速 <用户ID>
+/ai 限速列表（查看限速名单与冷却状态）
 
 【关键词】
 /ai 加词 <关键词…>
 /ai 删词 <关键词…>
-/ai 加屏蔽 <群ID> <词>（指定群里有人发这个词就静默不理；不带参数回当前屏蔽词列表）
+/ai 词列表
+/ai 加屏蔽 <群ID> <词>（指定群里有人发这个词就静默不理；不带参数回当前列表）
+/ai 删屏蔽（再回 <序号>：删一条屏蔽群或屏蔽词）
+/ai 屏蔽列表
 
 【API 管理】
 /ai 查看api
 /ai 查看模型 <API名字>
 /ai 换模型（回序号选 API，再回序号从它的全部模型里挑，不用记模型名；聊天 API 挑完即默认用它，生图 API 只换生图模型）
 /ai 限额（再回 <序号>）
-/ai 换key（再回 <序号> 选 API，再发新 key 全文；改完立即生效，不用重启）
-/ai 禁用api（再回 <序号>）
-/ai 启用api（再回 <序号>）
+/ai 换key（再回 <序号> 选目标——各 API、TTS、搜索都在一个列表里，再发新 key 全文；改完立即生效，不用重启）
+/ai 切换api（再回 <序号>：按当前状态启用/禁用，不用记是禁用还是启用）
+/ai 加api（先回 <序号> 选类型：聊天/生图/识图，之后按提示分步发名字、baseURL、key、模型名；也可用下面的专用命令）
 /ai 加聊天api（发命令后按提示分步发名字、baseURL、key、模型名；也可一条发全四个参数）
 /ai 加生图api（分步添加同上；只用于生图，不参与聊天）
 /ai 加识图api（分步添加识图专用 API：名字、baseURL、key，再从它的模型列表里挑识图模型；不参与聊天）
@@ -133,7 +139,7 @@ export const OWNER_HELP_TEXT = `可用命令：
 
 【语音/人格】
 /ai 换tts接口 <地址>
-/ai 换ttskey <新key>（改完立即生效，不回显）
+/ai 换ttskey <新key>（改完立即生效，不回显；也可用 /ai 换key 统一列表选 TTS）
 /ai 加音色（先发名字，再发音色 ID）
 /ai 删音色（再回 <序号>）
 /ai 音色列表
@@ -163,20 +169,21 @@ export const OWNER_HELP_TEXT = `可用命令：
 /ai 清除破甲
 
 【人设】
-/ai 设人设 <内容>
-/ai 人设
+/ai 人设（查看；/ai 人设 <内容> 直接设置）
+/ai 设人设 <内容>（同上，旧写法保留）
 /ai 清除人设
 
 【记事本】
 /ai 记住 <内容>
 /ai 记事本
 /ai 忘掉 <序号>
-/ai 清空记事本
+/ai 清空记事本（再回「确认」才执行）
 /ai 称呼 <用户ID> <称呼>
 /ai 印象 <用户ID>（查看该用户的称呼、印象与用户记事本；别名 查看印象）
 /ai 印象 <用户ID> <内容>（设置印象）
 /ai 忘掉用户 <用户ID> <序号>（删该用户记事本里的一条）
-/ai 清空用户记忆 <用户ID>
+/ai 清空用户记忆 <用户ID>（再回「确认」才执行）
+/ai 清空 <记事本 | 用户记忆 <用户ID> | 上下文>（清空类统一入口，同样再回「确认」执行）
 
 【机器人改名】
 /ai 改名 <名字>（只改打头的名字；姓氏位固定是名字时钟的时间，不设自定义姓氏；别名 设置名称）
@@ -449,6 +456,7 @@ function isSensitiveTextPending(entry) {
 if (!entry) return false;
 return (
 (entry.kind === "换key" && entry.step === 2) ||
+(entry.kind === "换ttskey" && entry.step === 2) ||
 (entry.kind === "换搜索key" && entry.step === 2) ||
 (entry.kind === "加识图" && entry.step === 2) ||
 entry.kind === "加api" ||
@@ -566,6 +574,19 @@ saveConfigJson({ sensitiveGroups: [...sensitiveGroupsSet], sensitiveKeywords: [.
 } catch (err) {
 logger.error(`保存屏蔽名单失败：${err.message}`);
 }
+}
+
+/** 屏蔽配置的展示文本（/ai 屏蔽列表 与 加屏蔽无参 共用）。空配置返回空串。 */
+function sensitiveListReply() {
+const groups = [...sensitiveGroupsSet];
+const words = [...sensitiveKeywordsSet];
+if (groups.length === 0 && words.length === 0) return "";
+const lines = ["当前屏蔽配置："];
+lines.push(groups.length > 0 ? `屏蔽群（${groups.length} 个）：` : "屏蔽群：（无）");
+groups.forEach((g, i) => lines.push(`${i + 1}. ${g}`));
+lines.push(words.length > 0 ? `屏蔽词（${words.length} 个，对所有屏蔽群生效）：` : "屏蔽词：（无）");
+words.forEach((w, i) => lines.push(`${i + 1}. ${w}`));
+return lines.join("\n");
 }
 
 /**
@@ -1042,6 +1063,19 @@ pending.set(chatId, senderId, entry);
 await reply(msg, `${header}\n${lines.join("\n")}`);
 }
 
+/**
+ * 清空类命令的确认发起（0.2.1 防呆）：报出规模，60 秒内再回「确认」才真清。
+ * 清空不可逆，此前一条消息就直接执行；现在所有清空入口（含旧命令）都过这一步。
+ */
+async function startClearConfirm(msg, chatId, senderId, target, targetUserId = "") {
+let detail;
+if (target === "记事本") detail = `当前会话记事本（共 ${notebook.facts(chatId).length} 条）`;
+else if (target === "用户记忆") detail = `用户 ${targetUserId} 的用户记事本（共 ${userNotebook.facts(targetUserId).length} 条）`;
+else detail = `全部对话上下文（共 ${store.count()} 组）`;
+pending.set(chatId, senderId, { kind: "清空确认", target, targetUserId });
+return reply(msg, `将清空${detail}，清了就找不回来。60 秒内单独回「确认」执行；发其他内容或等超时都算取消。`);
+}
+
 /** 深拷贝 visionPool（改一条条目时不直接动 config 里的对象）。 */
 function cloneVisionPool() {
 const out = {};
@@ -1097,6 +1131,21 @@ if (timer) clearTimeout(timer);
   async function executePending(msg, chatId, senderId, entry, text) {
     const keyProp = "api" + "Key";
 
+    // ---- 清空确认（0.2.1 防呆）：只认单独的「确认」，其余一律取消 ----
+    if (entry.kind === "清空确认") {
+      if (text.trim() !== "确认") return reply(msg, "已取消，什么都没清。");
+      if (entry.target === "记事本") {
+        const n = notebook.clear(chatId);
+        return reply(msg, `已清空当前会话记事本（原有 ${n} 条）`);
+      }
+      if (entry.target === "用户记忆") {
+        const n = userNotebook.clear(entry.targetUserId);
+        return reply(msg, `已清空用户 ${entry.targetUserId} 的用户记事本（原有 ${n} 条）`);
+      }
+      const cleared = store.clearAll();
+      return reply(msg, `已清空全部对话上下文（${cleared} 组）`);
+    }
+
     // ---- 加 API 四步（名字 -> baseURL -> key -> 模型名；一步式在命令处直接处理） ----
     if (entry.kind === "加api") {
       if (entry.step === 1) {
@@ -1150,6 +1199,15 @@ if (timer) clearTimeout(timer);
       if (digits === null || !Array.isArray(list) || digits < 1 || digits > list.length) return null;
       return list[digits - 1];
     };
+
+    // ---- 加 API 类型选择（0.2.1 统一入口 /ai 加api 的第一步） ----
+    if (entry.kind === "加api类型") {
+      const t = pickFrom(entry.types);
+      if (t === "聊天") return startAddApi(msg, chatId, senderId, [], false);
+      if (t === "生图") return startAddApi(msg, chatId, senderId, [], true);
+      if (t === "识图") return startAddVisionApi(msg, chatId, senderId, []);
+      return reply(msg, "编号超出范围，请重新发 /ai 加api。");
+    }
 
     // ---- 识图：加识图两步（选 API -> 从它的模型列表里挑，选完实测） ----
     // v0.0.6 完善：旧版第二步要手打模型名（打错、选了纯文本模型都静默存下、
@@ -1213,6 +1271,16 @@ if (timer) clearTimeout(timer);
       if (vp[item.apiName].length === 0) delete vp[item.apiName];
       if (!saveAndReload({ visionPool: vp })) return reply(msg, "保存失败，请看日志。");
       return reply(msg, `已删除识图条目：${item.apiName} → ${item.model}，已生效。`);
+    }
+
+    // ---- 屏蔽：删屏蔽（0.2.1：删屏蔽群或屏蔽词。旧版只加不删，删只能手改 config.json） ----
+    if (entry.kind === "删屏蔽") {
+      const item = pickFrom(entry.items);
+      if (!item) return reply(msg, "编号超出范围，请重新发 /ai 删屏蔽。");
+      if (item.type === "群") sensitiveGroupsSet.delete(item.value);
+      else sensitiveKeywordsSet.delete(item.value);
+      persistSensitive();
+      return reply(msg, `已删除屏蔽${item.type}「${item.value}」，已生效。`);
     }
 
     // ---- 识图：识图权重两步（选条目 -> 发新权重） ----
@@ -1295,6 +1363,30 @@ if (timer) clearTimeout(timer);
       if (!newKey) return reply(msg, "key 是空的，没改。重新发 /ai 换搜索key 再试。");
       if (!saveAndReload({ searchApiKey: newKey })) return reply(msg, "保存失败，请看日志。");
       return reply(msg, "搜索 key 已更新，立即生效，联网搜索已启用。（key 不会回显）");
+    }
+
+    // ---- TTS key：换ttskey 第二步（0.2.1 统一换key 列表里选了 TTS，收全文落盘） ----
+    if (entry.step === 2 && entry.kind === "换ttskey") {
+      const newKey = text.trim();
+      if (!newKey) return reply(msg, "key 是空的，没改。重新发 /ai 换key 再试。");
+      if (!saveAndReload({ ttsApiKey: newKey })) return reply(msg, "保存失败，请看日志。");
+      return reply(msg, "TTS key 已更新，立即生效。（key 不会回显）");
+    }
+
+    // ---- 换key 第一步（0.2.1 统一列表：各 API + TTS + 搜索；targets 版本优先于旧版按池选） ----
+    if (entry.kind === "换key" && entry.step === 1 && Array.isArray(entry.targets)) {
+      const t = pickFrom(entry.targets);
+      if (!t) return reply(msg, "编号超出范围，请重新发 /ai 换key。");
+      if (t.type === "api") {
+        pending.set(chatId, senderId, { kind: "换key", step: 2, providerName: t.name });
+        return reply(msg, `已选「${t.name}」。请把新 key 作为下一条消息单独发出来，60 秒内有效。（key 不会回显，也不会记进日志）`);
+      }
+      if (t.type === "tts") {
+        pending.set(chatId, senderId, { kind: "换ttskey", step: 2 });
+        return reply(msg, "已选 TTS。请把新 key 作为下一条消息单独发出来，60 秒内有效。（key 不会回显，也不会记进日志）");
+      }
+      pending.set(chatId, senderId, { kind: "换搜索key", step: 2 });
+      return reply(msg, "已选：搜索。请把新 key 作为下一条消息单独发出来，60 秒内有效。（key 不会回显，也不会记进日志）");
     }
 
     // 第二步：换模型（回数字从列表里选，或直接发模型名全文；写 overrides 并设为默认提供方）
@@ -1392,6 +1484,22 @@ if (timer) clearTimeout(timer);
       overrides[target.name] = { ...(overrides[target.name] || {}), disabled: false };
       if (!saveAndReload({ providerOverrides: overrides })) return reply(msg, "保存失败，请看日志。");
       return reply(msg, `已启用「${target.name}」，已生效。`);
+    }
+
+    if (entry.kind === "切换api") {
+      // 启用/禁用合一（0.2.1）：按当前状态翻转；禁用前照旧拦「最后一个启用的提供方」。
+      if (!target.disabled && pool.enabledCount() <= 1) {
+        return reply(msg, `不能禁用「${target.name}」：它是最后一个启用的提供方，禁了就没得用了。`);
+      }
+      const overrides = { ...(config.providerOverrides || {}) };
+      overrides[target.name] = { ...(overrides[target.name] || {}), disabled: !target.disabled };
+      if (!saveAndReload({ providerOverrides: overrides })) return reply(msg, "保存失败，请看日志。");
+      return reply(
+        msg,
+        target.disabled
+          ? `已启用「${target.name}」，已生效。`
+          : `已禁用「${target.name}」，已生效。它不会再被挑中回答；要恢复再发 /ai 切换api 选它。`,
+      );
     }
 
     if (entry.kind === "限额") {
@@ -1556,9 +1664,19 @@ if (timer) clearTimeout(timer);
     if (cmd === "拉黑") {
       const target = unwrapArg((rest[0] || "").trim());
       if (!target) return reply(msg, "用法：/ai 拉黑 <用户ID>");
+      // 数字 ID 或匿名身份（anon: 开头）才收（0.2.1 起校验，与限速同口径，防手滑拉错）
+      if (!/^\d+$/.test(target) && !/^anon:/.test(target)) {
+        return reply(msg, "用户 ID 应是纯数字（或 anon: 开头的匿名身份），这次没拉黑。重新发命令再试。");
+      }
       blacklist.add(target);
       persistBlacklist();
       return reply(msg, `已拉黑用户 ${target}`);
+    }
+
+    if (cmd === "黑名单") {
+      if (blacklist.size === 0) return reply(msg, "黑名单是空的。用 /ai 拉黑 <用户ID> 添加。");
+      const lines = [...blacklist].map((id, i) => `${i + 1}. ${id}`);
+      return reply(msg, `黑名单（共 ${blacklist.size} 人）：\n${lines.join("\n")}`);
     }
 
     if (cmd === "解封") {
@@ -1588,6 +1706,15 @@ if (timer) clearTimeout(timer);
       return reply(msg, `已解除 ${target} 的限速，冷却与递增计数一并清零。`);
     }
 
+    if (cmd === "限速列表") {
+      if (slowdownSet.size === 0) return reply(msg, "限速名单是空的。用 /ai 限速 <用户ID> 添加。");
+      const lines = [...slowdownSet].map((id, i) => {
+        const cooling = slowdown.isBlocked(id) ? "（冷却中）" : "（当前不在冷却）";
+        return `${i + 1}. ${id}${cooling}`;
+      });
+      return reply(msg, `限速名单（共 ${slowdownSet.size} 人）：\n${lines.join("\n")}`);
+    }
+
     if (cmd === "加词" || cmd === "删词") {
       const words = rest.map((w) => w.trim()).filter(Boolean);
       if (words.length === 0) return reply(msg, `用法：/ai ${cmd} <关键词1> <关键词2> …`);
@@ -1612,14 +1739,49 @@ if (timer) clearTimeout(timer);
       return reply(msg, `代码关键词已更新：删除 ${removed} 个，不存在 ${missing} 个，现有共 ${codeKeywordSet.size} 个。`);
     }
 
+    if (cmd === "词列表") {
+      if (codeKeywordSet.size === 0) return reply(msg, "代码关键词是空的。用 /ai 加词 <关键词…> 添加。");
+      const lines = [...codeKeywordSet].map((w, i) => `${i + 1}. ${w}`);
+      return reply(msg, `代码关键词（共 ${codeKeywordSet.size} 个）：\n${lines.join("\n")}`);
+    }
+
+    if (cmd === "屏蔽列表") {
+      return reply(msg, sensitiveListReply());
+    }
+
     if (cmd === "加屏蔽") {
       const gid = unwrapArg((rest[0] || "").trim());
       const word = unwrapArg(rest.slice(1).join(" ").trim());
-      if (!gid || !word) return reply(msg, "用法：/ai 加屏蔽 <群ID> <词>");
+      if (!gid || !word) {
+        // 帮助一直承诺的「不带参数回当前列表」（0.2.1 兑现）
+        const list = sensitiveListReply();
+        return reply(
+          msg,
+          list
+            ? `${list}\n\n添加：/ai 加屏蔽 <群ID> <词>`
+            : "屏蔽配置是空的。添加：/ai 加屏蔽 <群ID> <词>（指定群里有人发这个词就静默不理）",
+        );
+      }
       sensitiveGroupsSet.add(gid);
       sensitiveKeywordsSet.add(word);
       persistSensitive();
-      return reply(msg, `已给群 ${gid} 添加屏蔽词：${word}（屏蔽词对所有屏蔽群生效）`);
+      return reply(msg, `已给群 ${gid} 添加屏蔽词：${word}（屏蔽词对所有屏蔽群生效）。删除用 /ai 删屏蔽。`);
+    }
+
+    if (cmd === "删屏蔽") {
+      const items = [
+        ...[...sensitiveGroupsSet].map((g) => ({ type: "群", value: g })),
+        ...[...sensitiveKeywordsSet].map((w) => ({ type: "词", value: w })),
+      ];
+      if (items.length === 0) return reply(msg, "屏蔽配置是空的，没有可删的。先 /ai 加屏蔽 <群ID> <词> 添加。");
+      return startListPending(
+        msg,
+        chatId,
+        senderId,
+        { kind: "删屏蔽", step: 1, items },
+        "删哪一条？（60 秒内单独回一个数字）",
+        items.map((it, i) => `${i + 1}. [${it.type}] ${it.value}`),
+      );
     }
 
     if (cmd === "加管理员") {
@@ -1699,9 +1861,45 @@ if (timer) clearTimeout(timer);
       }
     }
 
-    if (cmd === "换模型" || cmd === "限额" || cmd === "换key" || cmd === "禁用api" || cmd === "启用api") {
+    if (cmd === "换key") {
+      // 统一换 key（0.2.1）：一个列表管全部——各 API + TTS + 搜索，回序号后再发新 key。
+      // 旧入口 /ai 换搜索key、/ai 换ttskey <key> 保留为快捷别名。
+      const keyTail = (v) => {
+        const k = String(v || "").trim();
+        return k ? `key 尾号 ${k.slice(-4)}` : "key 未设";
+      };
+      const targets = pool.entries.map((e) => {
+        const def = (config.providers || []).find((p) => p && p.name === e.name);
+        const kindText = e.image ? "生图" : e.vision ? "识图" : "聊天";
+        return { type: "api", name: e.name, label: `${e.name}（${kindText} API｜模型 ${e.model}｜${keyTail(def && def[keyProp])}）` };
+      });
+      targets.push({ type: "tts", label: `TTS（语音合成｜${keyTail(config.ttsApiKey)}）` });
+      targets.push({ type: "search", label: `搜索｜${keyTail(config.searchApiKey)}` });
+      pending.set(chatId, senderId, { kind: "换key", step: 1, targets });
+      const lines = targets.map((t, i) => `${i + 1}. ${t.label}`);
+      return reply(
+        msg,
+        `换哪个的 key？（60 秒内单独回一个数字）：\n${lines.join("\n")}\n（key 不会回显，也不会记进日志）`,
+      );
+    }
+
+    if (cmd === "切换api") {
+      // 启用/禁用合一（0.2.1）：按当前状态切换，不用记该发禁用还是启用。旧两条保留。
+      return startSelect(msg, chatId, senderId, "切换api");
+    }
+
+    if (cmd === "换模型" || cmd === "限额" || cmd === "禁用api" || cmd === "启用api") {
       // 两步选择：这一条只负责列出选项并登记 pending，数字必须下一条单独发。
       return startSelect(msg, chatId, senderId, cmd);
+    }
+
+    if (cmd === "加api") {
+      // 类型选择（0.2.1）：聊天 / 生图 / 识图，之后的参数流程三条线完全一样。
+      pending.set(chatId, senderId, { kind: "加api类型", step: 1, types: ["聊天", "生图", "识图"] });
+      return reply(
+        msg,
+        "加哪种 API？（60 秒内单独回一个数字）\n1. 聊天（参与问答）\n2. 生图（只画图）\n3. 识图（只看图，选完从模型列表里挑）",
+      );
     }
 
     if (cmd === "加聊天api") {
@@ -1978,13 +2176,19 @@ if (timer) clearTimeout(timer);
     }
 
     if (cmd === "人设") {
+      const content = unwrapArg(rest.join(" ").trim());
+      // 破甲式（0.2.1）：同词带参=设置、无参=查看，与 破甲/印象 口径一致；设人设 保留为别名。
+      if (content) {
+        if (!saveAndReload({ systemPrompt: content })) return reply(msg, "保存失败，请看日志。");
+        return reply(msg, "人设已设置，已生效。发 /ai 人设 可查看当前人设。");
+      }
       if (config.systemPromptIsDefault) {
         return reply(
           msg,
-          `当前用的是内置默认人设：\n${config.systemPrompt}\n\n设置：/ai 设人设 <内容>（比如：你是个毒舌但热心的群友，说话简短带点阴阳怪气）`,
+          `当前用的是内置默认人设：\n${config.systemPrompt}\n\n设置：/ai 人设 <内容>（比如：你是个毒舌但热心的群友，说话简短带点阴阳怪气）`,
         );
       }
-      return reply(msg, `当前人设：\n${config.systemPrompt}\n\n改：/ai 设人设 <内容>；清除：/ai 清除人设`);
+      return reply(msg, `当前人设：\n${config.systemPrompt}\n\n改：/ai 人设 <内容>；清除：/ai 清除人设`);
     }
 
     if (cmd === "清除人设") {
@@ -2016,9 +2220,27 @@ if (timer) clearTimeout(timer);
       return reply(msg, "用法：/ai 忘掉 <序号>（序号看 /ai 记事本）");
     }
 
-    if (cmd === "清空记事本") {
-      const n = notebook.clear(chatId);
-      return reply(msg, `已清空当前会话记事本（原有 ${n} 条）`);
+    if (cmd === "清空记事本") return startClearConfirm(msg, chatId, senderId, "记事本");
+
+    if (cmd === "清空用户记忆") {
+      const target = unwrapArg((rest[0] || "").trim());
+      if (!target) return reply(msg, "用法：/ai 清空用户记忆 <用户ID>（60 秒内再回「确认」执行）");
+      return startClearConfirm(msg, chatId, senderId, "用户记忆", target);
+    }
+
+    if (cmd === "清空上下文") return startClearConfirm(msg, chatId, senderId, "上下文");
+
+    if (cmd === "清空") {
+      // 清空类统一入口（0.2.1）：/ai 清空 <记事本 | 用户记忆 <用户ID> | 上下文>
+      const what = (rest[0] || "").trim();
+      if (what === "记事本") return startClearConfirm(msg, chatId, senderId, "记事本");
+      if (what === "上下文") return startClearConfirm(msg, chatId, senderId, "上下文");
+      if (what === "用户记忆") {
+        const target = unwrapArg((rest[1] || "").trim());
+        if (!target) return reply(msg, "用法：/ai 清空 用户记忆 <用户ID>");
+        return startClearConfirm(msg, chatId, senderId, "用户记忆", target);
+      }
+      return reply(msg, "用法：/ai 清空 <记事本 | 用户记忆 <用户ID> | 上下文>（都是不可逆操作，要再回「确认」才执行）");
     }
 
     if (cmd === "称呼") {
@@ -3092,6 +3314,11 @@ if (timer) clearTimeout(timer);
             }
             // 过期且不是数字、也不是敏感文本待办：已清掉，按普通消息继续往下走。
           } else if (expectsText) {
+            pending.consume(chatId, senderId);
+            await executePending(msg, chatId, senderId, pk.entry, trimmed);
+            return;
+          } else if (pk.entry.kind === "清空确认") {
+            // 清空确认收任何文本：只认「确认」，其余一律当取消（防呆，0.2.1）。
             pending.consume(chatId, senderId);
             await executePending(msg, chatId, senderId, pk.entry, trimmed);
             return;

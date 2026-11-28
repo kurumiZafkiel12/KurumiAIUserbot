@@ -444,6 +444,7 @@ test("K062-12 后台整理期间清空记事本，整理结果被丢弃、不会
   assert.ok(consolidationStarted, "第 8 轮后应已触发后台整理");
   // 整理还在等模型返回时，号主清空记事本
   await f.handler(f.event("/ai 清空记事本"));
+  await f.handler(f.event("确认")); // 0.2.1 起清空要走确认
   assert.deepEqual(f.notebook.facts("111"), []);
   releaseConsolidation();
   await new Promise((r) => setTimeout(r, 50));
@@ -515,6 +516,7 @@ test("v0.7.0 忘掉用户/清空用户记忆：按 ID 管理用户事实", async
   await f.handler(f.event("/ai 忘掉用户 999 1"));
   assert.deepEqual(f.userNotebook.facts("999"), ["事实二"]);
   await f.handler(f.event("/ai 清空用户记忆 999"));
+  await f.handler(f.event("确认")); // 0.2.1 起清空要走确认
   assert.deepEqual(f.userNotebook.facts("999"), []);
 });
 
@@ -1346,4 +1348,124 @@ test("0.2.0 mediaByteSizeOf：文档 size（Long/数字）、照片 sizes、file
   assert.equal(mediaByteSizeOf({ file: { size: 123 } }), 123);
   assert.equal(mediaByteSizeOf({}), 0);
   assert.equal(mediaByteSizeOf(null), 0);
+});
+
+// ================= 0.2.1：缺口补齐 / 低风险合并 / 清空防呆 =================
+
+test("0.2.1 换key 统一列表：API+TTS+搜索 一起列，选 API 后发 key 落盘", async () => {
+  const f = fixture();
+  await f.handler(f.event("/ai 换key"));
+  const list = f.sends[f.sends.length - 1].message;
+  assert.ok(list.includes("default"), "列表应含 API");
+  assert.ok(list.includes("TTS"), "列表应含 TTS");
+  assert.ok(list.includes("搜索"), "列表应含搜索");
+  await f.handler(f.event("1")); // 选 default API
+  assert.ok(f.sends[f.sends.length - 1].message.includes("已选「default」"));
+  await f.handler(f.event("NEW-SECRET-KEY-021"));
+  assert.ok(f.sends[f.sends.length - 1].message.includes("已更新"));
+  const saved = JSON.parse(fs.readFileSync(path.join(tmpRoot, "config.json"), "utf-8"));
+  assert.equal(saved.providerOverrides.default.apiKey, "NEW-SECRET-KEY-021");
+  assert.equal(f.modelCalls.length, 0, "换 key 不走模型");
+});
+
+test("0.2.1 换key 统一列表选 TTS：key 写进 ttsApiKey", async () => {
+  const f = fixture();
+  await f.handler(f.event("/ai 换key"));
+  await f.handler(f.event("2")); // TTS 在 API 之后固定第二位
+  await f.handler(f.event("NEW-TTS-KEY"));
+  assert.ok(f.sends[f.sends.length - 1].message.includes("TTS key 已更新"));
+  const saved = JSON.parse(fs.readFileSync(path.join(tmpRoot, "config.json"), "utf-8"));
+  assert.equal(saved.ttsApiKey, "NEW-TTS-KEY");
+});
+
+test("0.2.1 清空防呆：确认才清，发别的取消", async () => {
+  const f = fixture();
+  f.notebook.addFacts("111", ["重要事实"]);
+  await f.handler(f.event("/ai 清空记事本"));
+  assert.deepEqual(f.notebook.facts("111"), ["重要事实"], "未确认前不能清");
+  assert.ok(f.sends[f.sends.length - 1].message.includes("确认"), "应提示需确认");
+  await f.handler(f.event("算了"));
+  assert.deepEqual(f.notebook.facts("111"), ["重要事实"], "非确认回复应取消");
+  await f.handler(f.event("/ai 清空记事本"));
+  await f.handler(f.event("确认"));
+  assert.deepEqual(f.notebook.facts("111"), [], "确认后清空");
+});
+
+test("0.2.1 黑名单列表 + 拉黑格式校验", async () => {
+  const f = fixture();
+  await f.handler(f.event("/ai 拉黑 不是数字"));
+  assert.ok(f.sends[f.sends.length - 1].message.includes("没拉黑"), "非数字/匿名 ID 拒绝");
+  await f.handler(f.event("/ai 拉黑 888"));
+  await f.handler(f.event("/ai 黑名单"));
+  const list = f.sends[f.sends.length - 1].message;
+  assert.ok(list.includes("888") && list.includes("黑名单"));
+  await f.handler(f.event("/ai 拉黑 anon:-100777:管理员甲"));
+  await f.handler(f.event("/ai 黑名单"));
+  assert.ok(f.sends[f.sends.length - 1].message.includes("anon:"), "匿名身份可拉黑");
+});
+
+test("0.2.1 切换api：两提供方按状态翻转，最后一个启用拦截", async () => {
+  const f = fixture({
+    config: {
+      providers: [
+        { name: "default", model: "m1", baseURL: "https://a.invalid/v1", apiKey: "k1", dailyLimit: 0 },
+        { name: "second", model: "m2", baseURL: "https://b.invalid/v1", apiKey: "k2", dailyLimit: 0 },
+      ],
+    },
+  });
+  const readOverrides = () => JSON.parse(fs.readFileSync(path.join(tmpRoot, "config.json"), "utf-8")).providerOverrides;
+  await f.handler(f.event("/ai 切换api"));
+  await f.handler(f.event("1")); // default：启用中 → 禁用
+  assert.ok(f.sends[f.sends.length - 1].message.includes("已禁用「default」"));
+  assert.equal(readOverrides().default.disabled, true, "禁用要落盘");
+  // fixture 不接热重载：手动把池条目置为禁用态，模拟真实重载后的池
+  f.pool.getByName("default").disabled = true;
+  await f.handler(f.event("/ai 切换api"));
+  await f.handler(f.event("1")); // default：已禁用 → 启用
+  assert.ok(f.sends[f.sends.length - 1].message.includes("已启用「default」"));
+  assert.equal(readOverrides().default.disabled, false, "启用要落盘");
+  // 单提供方时禁用被拦（新的 fixture 只有一个提供方）
+  const g = fixture();
+  await g.handler(g.event("/ai 切换api"));
+  await g.handler(g.event("1"));
+  assert.ok(g.sends[g.sends.length - 1].message.includes("最后一个启用的提供方"));
+});
+
+test("0.2.1 加屏蔽无参回列表；删屏蔽按序号删除", async () => {
+  const f = fixture();
+  await f.handler(f.event("/ai 加屏蔽"));
+  assert.ok(f.sends[f.sends.length - 1].message.includes("屏蔽配置是空的"), "无参应回列表（帮助旧承诺兑现）");
+  await f.handler(f.event("/ai 加屏蔽 -100777 敏感词"));
+  await f.handler(f.event("/ai 屏蔽列表"));
+  const list = f.sends[f.sends.length - 1].message;
+  assert.ok(list.includes("-100777") && list.includes("敏感词"));
+  await f.handler(f.event("/ai 删屏蔽"));
+  await f.handler(f.event("2")); // 第二条是屏蔽词
+  assert.ok(f.sends[f.sends.length - 1].message.includes("已删除屏蔽词"));
+  await f.handler(f.event("/ai 屏蔽列表"));
+  assert.ok(!f.sends[f.sends.length - 1].message.includes("敏感词"), "词应已删");
+  assert.ok(f.sends[f.sends.length - 1].message.includes("-100777"), "群应还在");
+});
+
+test("0.2.1 人设带参直接设置（破甲式），无参查看", async () => {
+  const f = fixture();
+  await f.handler(f.event("/ai 人设 你是测试机器人。"));
+  assert.ok(f.sends[f.sends.length - 1].message.includes("人设已设置"));
+  const saved = JSON.parse(fs.readFileSync(path.join(tmpRoot, "config.json"), "utf-8"));
+  assert.equal(saved.systemPrompt, "你是测试机器人。", "人设要落盘");
+  // 无参查看（测试 fixture 不接热重载，用预设人设的 fixture 验查看分支）
+  const g = fixture({ config: { systemPrompt: "你是测试机器人。", systemPromptIsDefault: false } });
+  await g.handler(g.event("/ai 人设"));
+  assert.ok(g.sends[g.sends.length - 1].message.includes("你是测试机器人。"));
+});
+
+test("0.2.1 加api 类型选择进入分步流程；词列表/限速列表可用", async () => {
+  const f = fixture();
+  await f.handler(f.event("/ai 加api"));
+  assert.ok(f.sends[f.sends.length - 1].message.includes("加哪种 API"));
+  await f.handler(f.event("2")); // 生图
+  assert.ok(f.sends[f.sends.length - 1].message.includes("生图 API"), "选生图后进入分步");
+  await f.handler(f.event("/ai 加词 测试词"));
+  await f.handler(f.event("/ai 词列表"));
+  assert.ok(f.sends[f.sends.length - 1].message.includes("测试词"));
 });

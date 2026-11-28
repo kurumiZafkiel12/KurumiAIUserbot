@@ -40,6 +40,11 @@ export class ConversationStore {
     return this.store.delete(this.key(chatId, userId));
   }
 
+  /** 当前上下文组数（清空确认的规模展示用，0.2.1）。 */
+  count() {
+    return this.store.size;
+  }
+
   /** 清空全部上下文（号主命令用）。 */
   clearAll() {
     const n = this.store.size;
